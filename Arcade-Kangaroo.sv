@@ -229,8 +229,8 @@ localparam CONF_STR = {
 	"DIP;",
 	"-;",
 	"R0,Reset;",
-	"J1,Punch,Coin,Start 1P,Start 2P,Pause;",
-	"jn,A,Select,Start,R,L;",
+	"J1,Punch,Jump,Coin,Start 1P,Start 2P,Pause;",
+	"jn,A,B,Select,Start,R,L;",
 	"V,v",`BUILD_DATE
 };
 
