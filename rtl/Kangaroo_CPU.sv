@@ -1,564 +1,637 @@
 //============================================================================
 //
-//  Tutankham main PCB model (based on Time Pilot core)
-//  Copyright (C) 2021 Ace, Artemio Urbina & RTLEngineering
-//
-//  Permission is hereby granted, free of charge, to any person obtaining a
-//  copy of this software and associated documentation files (the "Software"),
-//  to deal in the Software without restriction, including without limitation
-//  the rights to use, copy, modify, merge, publish, distribute, sublicense,
-//  and/or sell copies of the Software, and to permit persons to whom the
-//  Software is furnished to do so, subject to the following conditions:
-//
-//  The above copyright notice and this permission notice shall be included in
-//  all copies or substantial portions of the Software.
-//
-//  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-//  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-//  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-//  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-//  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-//  FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-//  DEALINGS IN THE SOFTWARE.
+//  Kangaroo Main CPU Board (TVG-1-CPU-B)
+//  Based on MAME kangaroo.cpp by Ville Laitinen, Aaron Giles
 //
 //============================================================================
 
-//Module declaration, I/O ports
-module Tutankham_CPU
+module Kangaroo_CPU
 (
-	input         reset,
-	input         clk_49m,          //Actual frequency: 49.152MHz
-	output  [4:0] red, green, blue, //15-bit RGB, 5 bits per color
-	output        video_hsync, video_vsync, video_csync, //CSync not needed for MISTer
-	output        video_hblank, video_vblank,
-	output        ce_pix,
+    input         reset,
+    input         clk_10m,           // 10 MHz master clock (matches real XTAL)
 
-	input   [7:0] controls_dip,
-	input  [15:0] dip_sw,
-	input   [2:0] p1_fire_ext,    // {flash_bomb, fire_right, fire_left}
-	input   [2:0] p2_fire_ext,    // {flash_bomb, fire_right, fire_left}
-	input   [3:0] p1_joy,         // {down, up, right, left} active-HIGH
-	input   [3:0] p2_joy,         // {down, up, right, left} active-HIGH
-	output  [7:0] cpubrd_Dout,
-	output        cpubrd_A5, cpubrd_A6,
-	output        cs_sounddata, irq_trigger,
-	output        cs_dip2, cs_controls_dip1,
+    // Video outputs
+    output  [2:0] video_r, video_g,  // BGR 3-bit palette
+    output  [1:0] video_b,
+    output        video_hsync, video_vsync,
+    output        video_hblank, video_vblank,
+    output        ce_pix,
 
-	//Screen centering (alters HSync, VSync and VBlank timing in the Konami 082 to reposition the video output)
-	input   [3:0] h_center, v_center,
+    // Inputs
+    input   [7:0] dsw0,             // 8-bit DIP switch
+    input   [4:0] in0,              // IN0: service, start1, start2, coin_l, coin_r
+    input   [4:0] in1,              // IN1: P1 right, left, up, down, punch
+    input   [4:0] in2,              // IN2: P2 right, left, up, down, punch
 
-	//ROM chip selects for main program ROMs (6x 4KB)
-	input         rom_m1_cs_i, rom_m2_cs_i, rom_m3_cs_i,
-	input         rom_m4_cs_i, rom_m5_cs_i, rom_m6_cs_i,
-	//ROM chip selects for banked graphics ROMs (9x 4KB)
-	input         bank0_cs_i, bank1_cs_i, bank2_cs_i,
-	input         bank3_cs_i, bank4_cs_i, bank5_cs_i,
-	input         bank6_cs_i, bank7_cs_i, bank8_cs_i,
-	input  [24:0] ioctl_addr,
-	input   [7:0] ioctl_data,
-	input         ioctl_wr,
+    // Sound interface
+    output  [7:0] sound_latch,      // Data to sound CPU
+    output        sound_latch_wr,   // Strobe: sound latch written
 
-	input         pause,
+    // Blitter ROMs — directly memory-mapped, loaded via index 2
+    input         blit0_cs_i, blit1_cs_i, blit2_cs_i, blit3_cs_i,
+    // Main program ROMs — loaded via index 0
+    input         rom0_cs_i, rom1_cs_i, rom2_cs_i,
+    input         rom3_cs_i, rom4_cs_i, rom5_cs_i,
+    input  [24:0] ioctl_addr,
+    input   [7:0] ioctl_data,
+    input         ioctl_wr,
 
-	input  [15:0] hs_address,
-	input   [7:0] hs_data_in,
-	output  [7:0] hs_data_out,
-	input         hs_write
+    input         pause,
+
+    // Hiscore interface (active high, stubbed for now)
+    input  [15:0] hs_address,
+    input   [7:0] hs_data_in,
+    output  [7:0] hs_data_out,
+    input         hs_write
 );
 
-//------------------------------------------------------- Signal outputs -------------------------------------------------------//
+//------------------------------------------------------- Clock Enables -------------------------------------------------------//
 
-//Assign active high HBlank and VBlank outputs
-assign video_hblank = hblk;
-assign video_vblank = vblk;
-
-//Output pixel clock enable
-assign ce_pix = cen_6m;
-
-//Output select lines for player inputs and DIP switches to sound board
-assign cs_controls_dip1 = cs_in0 | cs_in1 | cs_in2 | cs_dsw1;
-assign cs_dip2 = cs_dsw2;
-
-//Output primary MC6809E address lines A5 and A6 to sound board
-// Swap A5/A6 so the sound board's {A6,A5} mux matches Tutankham's address map:
-// 0x8180 (IN0): A[6:5]=00 → mux 00 = coins/start  ✓
-// 0x81A0 (IN1): A[6:5]=01 → need mux 01 for P1, so swap: output A5=A[6], A6=A[5]
-// 0x81C0 (IN2): A[6:5]=10 → need mux 10 for P2, so swap: output A5=A[6], A6=A[5]
-// 0x81E0 (DSW1): A[6:5]=11 → mux 11 = dip_sw  ✓ (swap doesn't matter for 00/11)
-assign cpubrd_A5 = cpu_A[6];
-assign cpubrd_A6 = cpu_A[5];
-
-// Latch CPU data when writing sound commands — the data bus changes
-// on the next cycle but sound board needs it held for cen_3m sampling.
-reg [7:0] sound_data_latch = 8'd0;
-always_ff @(posedge clk_49m) begin
-	if(!reset)
-		sound_data_latch <= 8'd0;
-	else if(cs_soundcmd)
-		sound_data_latch <= cpu_Dout;
+// Generate clock enables from 10 MHz master
+// cen_5m  = 10/2 = 5 MHz (pixel clock)
+// cen_2m5 = 10/4 = 2.5 MHz (Z80 clock)
+reg [1:0] div = 2'd0;
+always_ff @(posedge clk_10m) begin
+    div <= div + 2'd1;
 end
-assign cpubrd_Dout = sound_data_latch;
+wire cen_5m  = (div[0] == 1'b0);     // Every 2nd clock
+wire cen_2m5 = (div == 2'd0);         // Every 4th clock
 
-// Latch sound command strobe — hold until sound board's cen_3m can sample it
-// The CPU write is brief; the sound board samples on cen_3m which is every 16 clocks.
-// We need to stretch the pulse so it's guaranteed to be seen.
-reg cs_sounddata_latch = 0;
-reg [3:0] snd_data_hold = 0;
-always_ff @(posedge clk_49m) begin
-    if(!reset) begin
-        cs_sounddata_latch <= 0;
-        snd_data_hold <= 0;
-    end
-    else begin
-        if(cs_soundcmd) begin
-            cs_sounddata_latch <= 1;
-            snd_data_hold <= 4'd15;  // Hold for 16 clocks (guarantees one cen_3m)
-        end
-        else if(snd_data_hold > 0)
-            snd_data_hold <= snd_data_hold - 4'd1;
-        else
-            cs_sounddata_latch <= 0;
-    end
-end
-assign cs_sounddata = cs_sounddata_latch;
+assign ce_pix = cen_5m;
 
-// Sound IRQ trigger — stretch pulse so sound board's cen_3m can catch it
-reg sound_irq = 0;
-reg [3:0] snd_irq_hold = 0;
-always_ff @(posedge clk_49m) begin
-    if(!reset) begin
-        sound_irq <= 0;
-        snd_irq_hold <= 0;
-    end
-    else begin
-        if(cs_soundon) begin
-            sound_irq <= 1;
-            snd_irq_hold <= 4'd15;
-        end
-        else if(snd_irq_hold > 0)
-            snd_irq_hold <= snd_irq_hold - 4'd1;
-        else
-            sound_irq <= 0;
-    end
-end
-assign irq_trigger = sound_irq;
+//------------------------------------------------------------ CPU -------------------------------------------------------------//
 
-//------------------------------------------------------- Clock division -------------------------------------------------------//
-
-//Generate 6.144MHz and 3.072MHz clock enables
-reg [3:0] div = 4'd0;
-always_ff @(posedge clk_49m) begin
-	div <= div + 4'd1;
-end
-wire cen_6m = !div[2:0];
-wire cen_3m = !div;
-
-//MC6809E E and Q clock generation from existing div[3:0] counter
-//div rolls over every 16 clocks: E toggles at 49.152MHz/16 = 3.072MHz, E freq = 1.536MHz
-//Q leads E by 90 degrees (4 system clocks)
-reg cpu_E = 0;
-reg cpu_Q = 0;
-always_ff @(posedge clk_49m) begin
-	if(~pause) begin
-		case(div[3:0])
-			4'd0:  begin cpu_E <= 1; cpu_Q <= 0; end
-			4'd4:  begin cpu_E <= 1; cpu_Q <= 1; end
-			4'd8:  begin cpu_E <= 0; cpu_Q <= 1; end
-			4'd12: begin cpu_E <= 0; cpu_Q <= 0; end
-			default: ;
-		endcase
-	end
-end
-
-//------------------------------------------------------------ CPUs ------------------------------------------------------------//
-
-//Primary CPU - Motorola MC6809E
+// Main CPU — Zilog Z80 (T80s soft core)
 wire [15:0] cpu_A;
-wire [7:0] cpu_Dout;
-wire cpu_RnW;
-mc6809e E3
+wire  [7:0] cpu_Dout;
+wire n_m1, n_mreq, n_iorq, n_rd, n_wr, n_rfsh;
+
+T80s #(.Mode(0), .T2Write(1), .IOWait(1)) main_cpu
 (
-	.D(cpu_Din),
-	.DOut(cpu_Dout),
-	.ADDR(cpu_A),
-	.RnW(cpu_RnW),
-	.E(cpu_E),
-	.Q(cpu_Q),
-	.nIRQ(n_irq),
-	.nFIRQ(1'b1),
-	.nNMI(1'b1),
-	.BS(),
-	.BA(),
-	.AVMA(),
-	.BUSY(),
-	.LIC(),
-	.nHALT(1'b1),
-	.nRESET(reset)
+    .RESET_n(reset),
+    .CLK(clk_10m),
+    .CEN(cen_2m5 & ~pause),
+    .INT_n(n_irq),
+    .NMI_n(n_nmi),
+    .BUSRQ_n(1'b1),
+    .M1_n(n_m1),
+    .MREQ_n(n_mreq),
+    .IORQ_n(n_iorq),
+    .RD_n(n_rd),
+    .WR_n(n_wr),
+    .RFSH_n(n_rfsh),
+    .A(cpu_A),
+    .DI(cpu_Din),
+    .DO(cpu_Dout)
 );
 
-//------------------------------------------------------ Address decoding ------------------------------------------------------//
+//------------------------------------------------------ Address Decoding ------------------------------------------------------//
 
-//Tutankham memory map
-wire n_cs_videoram = ~(cpu_A[15] == 1'b0);               // 0x0000-0x7FFF (32KB video RAM)
-// NOTE: There is no general work RAM at 0x8000-0x87FF in Tutankham.
-// That region is entirely I/O (palette, scroll, controls, mainlatch, etc.)
-// The only RAM in the 0x8xxx range is at 0x8800-0x8FFF (workram2).
-// Keeping this wire for hiscore compatibility but it should never be used in the data mux.
-wire n_cs_workram  = 1'b1;  // Disabled — no work RAM at 0x8000-0x87FF
-wire n_cs_workram2 = ~(cpu_A[15:11] == 5'b10001);         // 0x8800-0x8FFF (2KB work RAM expansion)
-wire n_cs_bankrom  = ~(cpu_A[15:12] == 4'b1001);          // 0x9000-0x9FFF (4KB banked ROM window)
-wire n_cs_mainrom  = ~(cpu_A[15:13] == 3'b101 |
-                       cpu_A[15:13] == 3'b110 |
-                       cpu_A[15:13] == 3'b111);            // 0xA000-0xFFFF (24KB main ROM)
+// Active-low signals for memory regions
+wire mem_access = ~n_mreq & n_rfsh;
 
-//Tutankham I/O decoding (memory-mapped in 0x8000-0x87FF region)
-wire cs_palette    = (cpu_A[15:4] == 12'h800);             // 0x8000-0x800F (palette RAM)
-wire cs_scroll     = (cpu_A[15:4] == 12'h810);             // 0x8100-0x810F (scroll register)
-wire cs_watchdog   = (cpu_A[15:4] == 12'h812);             // 0x8120 (watchdog)
-wire cs_dsw2       = (cpu_A[15:4] == 12'h816);             // 0x8160 (DIP SW2)
-wire cs_in0        = (cpu_A[15:4] == 12'h818);             // 0x8180 (IN0: coins, start)
-wire cs_in1        = (cpu_A[15:4] == 12'h81A);             // 0x81A0 (IN1: P1 controls)
-wire cs_in2        = (cpu_A[15:4] == 12'h81C);             // 0x81C0 (IN2: P2 controls)
-wire cs_dsw1       = (cpu_A[15:4] == 12'h81E);             // 0x81E0 (DIP SW1)
-wire cs_mainlatch  = (cpu_A[15:3] == 13'h1040) & ~cpu_RnW; // 0x8200-0x8207 (main latch)
-wire cs_banksel_wr = (cpu_A[15:8] == 8'h83) & ~cpu_RnW;    // 0x8300 (bank select)
-wire cs_soundon    = (cpu_A[15:8] == 8'h86) & ~cpu_RnW;    // 0x8600 (sound enable)
-wire cs_soundcmd   = (cpu_A[15:8] == 8'h87) & ~cpu_RnW;    // 0x8700 (sound command)
+// ROM: 0x0000-0x5FFF (read only)
+wire cs_rom = mem_access & (cpu_A[15:14] == 2'b00) & ~cpu_A[13]; // 0x0000-0x1FFF
+wire cs_rom_hi = mem_access & (cpu_A[15:13] == 3'b001);           // 0x2000-0x3FFF
+wire cs_rom_top = mem_access & (cpu_A[15:13] == 3'b010);          // 0x4000-0x5FFF
+wire cs_any_rom = cs_rom | cs_rom_hi | cs_rom_top;
 
-//ROM bank select register (0x8300)
-reg [3:0] rom_bank = 4'd0;
-always_ff @(posedge clk_49m) begin
-	if(!reset)
-		rom_bank <= 4'd0;
-	else if(cen_3m && cs_banksel_wr)
-		rom_bank <= cpu_Dout[3:0];
-end
+// Video RAM: 0x8000-0xBFFF (write only from CPU perspective)
+wire cs_videoram = mem_access & (cpu_A[15:14] == 2'b10);          // 0x8000-0xBFFF
 
-//------------------------------------------------------ CPU data input mux ---------------------------------------------------//
+// Banked blitter ROM: 0xC000-0xDFFF (read only)
+wire cs_blitbank = mem_access & (cpu_A[15:13] == 3'b110);         // 0xC000-0xDFFF
 
-// Controls and DIP switch data comes from the sound board via controls_dip input.
-// The sound board muxes the correct data based on cs_controls_dip1, cs_dip2,
-// cpubrd_A5, and cpubrd_A6 signals.
+// Work RAM: 0xE000-0xE3FF
+wire cs_workram = mem_access & (cpu_A[15:10] == 6'b111000);       // 0xE000-0xE3FF
 
-// I/O registers must be checked first (they're in the 0x8000-0x87FF range)
-// Controls/DIP data comes from the sound board via controls_dip
-wire [7:0] cpu_Din = cs_palette                              ? palette_D :
-                     cs_scroll                               ? scroll_reg :
-                     cs_watchdog                             ? 8'hFF :
-                     cs_in1          ? {1'b1, ~p1_fire_ext[2], ~p1_fire_ext[1], ~p1_fire_ext[0],
-                                        ~p1_joy[3], ~p1_joy[2], ~p1_joy[1], ~p1_joy[0]} :
-                     cs_in2          ? {1'b1, ~p2_fire_ext[2], ~p2_fire_ext[1], ~p2_fire_ext[0],
-                                        ~p2_joy[3], ~p2_joy[2], ~p2_joy[1], ~p2_joy[0]} :
-                     (cs_dsw2 | cs_in0 | cs_dsw1)            ? controls_dip :
-                     ~n_cs_workram2                          ? workram2_D :
-                     ~n_cs_bankrom                           ? bank_rom_D :
-                     ~n_cs_mainrom                           ? mainrom_D :
-                     ~n_cs_videoram                          ? videoram_D :
-                     8'hFF;
+// DSW: 0xE400 (read, mirrored across 0xE400-0xE7FF)
+wire cs_dsw = mem_access & (cpu_A[15:10] == 6'b111001);           // 0xE400-0xE7FF
 
-//------------------------------------------------------- Main program ROMs ----------------------------------------------------//
+// Video control: 0xE800-0xE80A (write, mirrored with 0x03F0)
+wire cs_vidctrl = mem_access & (cpu_A[15:10] == 6'b111010);       // 0xE800-0xEBFF
 
-//Main program ROMs (m1.1h through j6.6h, 6x 4KB = 24KB at 0xA000-0xFFFF)
-wire [7:0] rom_m1_D, rom_m2_D, rom_m3_D, rom_m4_D, rom_m5_D, rom_m6_D;
+// IN0 read / soundlatch write: 0xEC00
+wire cs_in0 = mem_access & (cpu_A[15:8] == 8'hEC);
 
-wire [7:0] mainrom_D = (cpu_A[15:12] == 4'hA) ? rom_m1_D :
-                       (cpu_A[15:12] == 4'hB) ? rom_m2_D :
-                       (cpu_A[15:12] == 4'hC) ? rom_m3_D :
-                       (cpu_A[15:12] == 4'hD) ? rom_m4_D :
-                       (cpu_A[15:12] == 4'hE) ? rom_m5_D :
-                       (cpu_A[15:12] == 4'hF) ? rom_m6_D :
-                       8'hFF;
+// IN1 read / coin counter write: 0xED00
+wire cs_in1 = mem_access & (cpu_A[15:8] == 8'hED);
 
-eprom_4k rom_m1 (.ADDR(cpu_A[11:0]), .CLK(clk_49m), .DATA(rom_m1_D),
-                 .ADDR_DL(ioctl_addr), .CLK_DL(clk_49m), .DATA_IN(ioctl_data),
-                 .CS_DL(rom_m1_cs_i), .WR(ioctl_wr));
-eprom_4k rom_m2 (.ADDR(cpu_A[11:0]), .CLK(clk_49m), .DATA(rom_m2_D),
-                 .ADDR_DL(ioctl_addr), .CLK_DL(clk_49m), .DATA_IN(ioctl_data),
-                 .CS_DL(rom_m2_cs_i), .WR(ioctl_wr));
-eprom_4k rom_m3 (.ADDR(cpu_A[11:0]), .CLK(clk_49m), .DATA(rom_m3_D),
-                 .ADDR_DL(ioctl_addr), .CLK_DL(clk_49m), .DATA_IN(ioctl_data),
-                 .CS_DL(rom_m3_cs_i), .WR(ioctl_wr));
-eprom_4k rom_m4 (.ADDR(cpu_A[11:0]), .CLK(clk_49m), .DATA(rom_m4_D),
-                 .ADDR_DL(ioctl_addr), .CLK_DL(clk_49m), .DATA_IN(ioctl_data),
-                 .CS_DL(rom_m4_cs_i), .WR(ioctl_wr));
-eprom_4k rom_m5 (.ADDR(cpu_A[11:0]), .CLK(clk_49m), .DATA(rom_m5_D),
-                 .ADDR_DL(ioctl_addr), .CLK_DL(clk_49m), .DATA_IN(ioctl_data),
-                 .CS_DL(rom_m5_cs_i), .WR(ioctl_wr));
-eprom_4k rom_m6 (.ADDR(cpu_A[11:0]), .CLK(clk_49m), .DATA(rom_m6_D),
-                 .ADDR_DL(ioctl_addr), .CLK_DL(clk_49m), .DATA_IN(ioctl_data),
-                 .CS_DL(rom_m6_cs_i), .WR(ioctl_wr));
+// IN2 read: 0xEE00
+wire cs_in2 = mem_access & (cpu_A[15:8] == 8'hEE);
 
-//------------------------------------------------------ Banked graphics ROMs --------------------------------------------------//
+// MCU: 0xEF00 (stubbed for bootleg — no MCU)
+wire cs_mcu = mem_access & (cpu_A[15:8] == 8'hEF);
 
-//Banked graphics ROMs (c1.1i through c9.9i, 9x 4KB)
-//Bank select register chooses which 4KB bank is visible at 0x9000-0x9FFF
-wire [7:0] bank0_D, bank1_D, bank2_D, bank3_D, bank4_D;
-wire [7:0] bank5_D, bank6_D, bank7_D, bank8_D;
+//--------------------------------------------------------- CPU Data Mux -------------------------------------------------------//
 
-wire [7:0] bank_rom_D = (rom_bank == 4'd0) ? bank0_D :
-                        (rom_bank == 4'd1) ? bank1_D :
-                        (rom_bank == 4'd2) ? bank2_D :
-                        (rom_bank == 4'd3) ? bank3_D :
-                        (rom_bank == 4'd4) ? bank4_D :
-                        (rom_bank == 4'd5) ? bank5_D :
-                        (rom_bank == 4'd6) ? bank6_D :
-                        (rom_bank == 4'd7) ? bank7_D :
-                        (rom_bank == 4'd8) ? bank8_D :
-                        8'hFF;
+wire [7:0] rom_D;
+wire [7:0] blitbank_D;
+wire [7:0] workram_D;
 
-eprom_4k bank0 (.ADDR(cpu_A[11:0]), .CLK(clk_49m), .DATA(bank0_D),
-                .ADDR_DL(ioctl_addr), .CLK_DL(clk_49m), .DATA_IN(ioctl_data),
-                .CS_DL(bank0_cs_i), .WR(ioctl_wr));
-eprom_4k bank1 (.ADDR(cpu_A[11:0]), .CLK(clk_49m), .DATA(bank1_D),
-                .ADDR_DL(ioctl_addr), .CLK_DL(clk_49m), .DATA_IN(ioctl_data),
-                .CS_DL(bank1_cs_i), .WR(ioctl_wr));
-eprom_4k bank2 (.ADDR(cpu_A[11:0]), .CLK(clk_49m), .DATA(bank2_D),
-                .ADDR_DL(ioctl_addr), .CLK_DL(clk_49m), .DATA_IN(ioctl_data),
-                .CS_DL(bank2_cs_i), .WR(ioctl_wr));
-eprom_4k bank3 (.ADDR(cpu_A[11:0]), .CLK(clk_49m), .DATA(bank3_D),
-                .ADDR_DL(ioctl_addr), .CLK_DL(clk_49m), .DATA_IN(ioctl_data),
-                .CS_DL(bank3_cs_i), .WR(ioctl_wr));
-eprom_4k bank4 (.ADDR(cpu_A[11:0]), .CLK(clk_49m), .DATA(bank4_D),
-                .ADDR_DL(ioctl_addr), .CLK_DL(clk_49m), .DATA_IN(ioctl_data),
-                .CS_DL(bank4_cs_i), .WR(ioctl_wr));
-eprom_4k bank5 (.ADDR(cpu_A[11:0]), .CLK(clk_49m), .DATA(bank5_D),
-                .ADDR_DL(ioctl_addr), .CLK_DL(clk_49m), .DATA_IN(ioctl_data),
-                .CS_DL(bank5_cs_i), .WR(ioctl_wr));
-eprom_4k bank6 (.ADDR(cpu_A[11:0]), .CLK(clk_49m), .DATA(bank6_D),
-                .ADDR_DL(ioctl_addr), .CLK_DL(clk_49m), .DATA_IN(ioctl_data),
-                .CS_DL(bank6_cs_i), .WR(ioctl_wr));
-eprom_4k bank7 (.ADDR(cpu_A[11:0]), .CLK(clk_49m), .DATA(bank7_D),
-                .ADDR_DL(ioctl_addr), .CLK_DL(clk_49m), .DATA_IN(ioctl_data),
-                .CS_DL(bank7_cs_i), .WR(ioctl_wr));
-eprom_4k bank8 (.ADDR(cpu_A[11:0]), .CLK(clk_49m), .DATA(bank8_D),
-                .ADDR_DL(ioctl_addr), .CLK_DL(clk_49m), .DATA_IN(ioctl_data),
-                .CS_DL(bank8_cs_i), .WR(ioctl_wr));
+wire [7:0] cpu_Din =
+    cs_any_rom     ? rom_D :
+    cs_blitbank    ? blitbank_D :
+    (cs_workram & ~n_rd) ? workram_D :
+    cs_dsw         ? dsw0 :
+    cs_in0         ? {3'b000, in0} :
+    cs_in1         ? {3'b000, in1} :
+    cs_in2         ? {3'b000, in2} :
+    cs_mcu         ? 8'h00 :       // Bootleg: MCU reads return 0
+    8'hFF;
+
+//-------------------------------------------------------- Program ROMs --------------------------------------------------------//
+
+wire [7:0] rom0_D, rom1_D, rom2_D, rom3_D, rom4_D, rom5_D;
+
+assign rom_D = (cpu_A[15:12] == 4'h0) ? rom0_D :
+               (cpu_A[15:12] == 4'h1) ? rom1_D :
+               (cpu_A[15:12] == 4'h2) ? rom2_D :
+               (cpu_A[15:12] == 4'h3) ? rom3_D :
+               (cpu_A[15:12] == 4'h4) ? rom4_D :
+               (cpu_A[15:12] == 4'h5) ? rom5_D :
+               8'hFF;
+
+eprom_4k rom0 (.ADDR(cpu_A[11:0]), .CLK(clk_10m), .DATA(rom0_D),
+               .ADDR_DL(ioctl_addr), .CLK_DL(clk_10m), .DATA_IN(ioctl_data),
+               .CS_DL(rom0_cs_i), .WR(ioctl_wr));
+eprom_4k rom1 (.ADDR(cpu_A[11:0]), .CLK(clk_10m), .DATA(rom1_D),
+               .ADDR_DL(ioctl_addr), .CLK_DL(clk_10m), .DATA_IN(ioctl_data),
+               .CS_DL(rom1_cs_i), .WR(ioctl_wr));
+eprom_4k rom2 (.ADDR(cpu_A[11:0]), .CLK(clk_10m), .DATA(rom2_D),
+               .ADDR_DL(ioctl_addr), .CLK_DL(clk_10m), .DATA_IN(ioctl_data),
+               .CS_DL(rom2_cs_i), .WR(ioctl_wr));
+eprom_4k rom3 (.ADDR(cpu_A[11:0]), .CLK(clk_10m), .DATA(rom3_D),
+               .ADDR_DL(ioctl_addr), .CLK_DL(clk_10m), .DATA_IN(ioctl_data),
+               .CS_DL(rom3_cs_i), .WR(ioctl_wr));
+eprom_4k rom4 (.ADDR(cpu_A[11:0]), .CLK(clk_10m), .DATA(rom4_D),
+               .ADDR_DL(ioctl_addr), .CLK_DL(clk_10m), .DATA_IN(ioctl_data),
+               .CS_DL(rom4_cs_i), .WR(ioctl_wr));
+eprom_4k rom5 (.ADDR(cpu_A[11:0]), .CLK(clk_10m), .DATA(rom5_D),
+               .ADDR_DL(ioctl_addr), .CLK_DL(clk_10m), .DATA_IN(ioctl_data),
+               .CS_DL(rom5_cs_i), .WR(ioctl_wr));
+
+//------------------------------------------------------- Blitter ROMs --------------------------------------------------------//
+
+// Blitter has 4 x 4KB ROMs, banked into 0xC000-0xDFFF via bank select (video_control[8])
+// Bank 0: blit0 + blit2 (when bit 0 or 2 of bank select is 0)
+// Bank 1: blit1 + blit3 (when bit 0 or 2 of bank select is set)
+// MAME: m_blitbank->set_entry((data & 0x05) ? 1 : 0)
+// Bank 0 maps: C000-CFFF=blit0(v0), D000-DFFF=blit2(v1)
+// Bank 1 maps: C000-CFFF=blit1(v2), D000-DFFF=blit3(v3)
+
+wire [7:0] blit0_D, blit1_D, blit2_D, blit3_D;
+wire blit_bank_sel = (video_control[8] & 8'h05) != 0;  // MAME: (data & 0x05) ? 1 : 0
+
+assign blitbank_D = cpu_A[12] ?
+    (blit_bank_sel ? blit3_D : blit2_D) :
+    (blit_bank_sel ? blit1_D : blit0_D);
+
+eprom_4k blit0 (.ADDR(cpu_A[11:0]), .CLK(clk_10m), .DATA(blit0_D),
+                .ADDR_DL(ioctl_addr), .CLK_DL(clk_10m), .DATA_IN(ioctl_data),
+                .CS_DL(blit0_cs_i), .WR(ioctl_wr));
+eprom_4k blit1 (.ADDR(cpu_A[11:0]), .CLK(clk_10m), .DATA(blit1_D),
+                .ADDR_DL(ioctl_addr), .CLK_DL(clk_10m), .DATA_IN(ioctl_data),
+                .CS_DL(blit1_cs_i), .WR(ioctl_wr));
+eprom_4k blit2 (.ADDR(cpu_A[11:0]), .CLK(clk_10m), .DATA(blit2_D),
+                .ADDR_DL(ioctl_addr), .CLK_DL(clk_10m), .DATA_IN(ioctl_data),
+                .CS_DL(blit2_cs_i), .WR(ioctl_wr));
+eprom_4k blit3 (.ADDR(cpu_A[11:0]), .CLK(clk_10m), .DATA(blit3_D),
+                .ADDR_DL(ioctl_addr), .CLK_DL(clk_10m), .DATA_IN(ioctl_data),
+                .CS_DL(blit3_cs_i), .WR(ioctl_wr));
 
 //------------------------------------------------------------ RAM ------------------------------------------------------------//
 
-// Work RAM at 0x8000-0x87FF does not exist in Tutankham hardware.
-// Hiscore support uses the 0x8800-0x8FFF work RAM (workram2) instead.
-
-//Work RAM (0x8800-0x8FFF, 2KB) — the only general-purpose RAM in the I/O region
-wire [7:0] workram2_D;
-dpram_dc #(.widthad_a(11)) workram2
+// Work RAM (0xE000-0xE3FF, 1KB)
+dpram_dc #(.widthad_a(10)) workram
 (
-	.clock_a(clk_49m),
-	.wren_a(~n_cs_workram2 & ~cpu_RnW),
-	.address_a(cpu_A[10:0]),
-	.data_a(cpu_Dout),
-	.q_a(workram2_D),
+    .clock_a(clk_10m),
+    .wren_a(cs_workram & ~n_wr),
+    .address_a(cpu_A[9:0]),
+    .data_a(cpu_Dout),
+    .q_a(workram_D),
 
-	.clock_b(clk_49m),
-	.wren_b(hs_write),
-	.address_b(hs_address[10:0]),
-	.data_b(hs_data_in),
-	.q_b(hs_data_out)
+    .clock_b(clk_10m),
+    .wren_b(hs_write),
+    .address_b(hs_address[9:0]),
+    .data_b(hs_data_in),
+    .q_b(hs_data_out)
 );
 
-// Scroll register (0x8100, 1 byte readable/writable)
-reg [7:0] scroll_reg = 8'd0;
-always_ff @(posedge clk_49m) begin
-	if(cen_6m && cs_scroll && ~cpu_RnW)
-		scroll_reg <= cpu_Dout;
-end
+//--------------------------------------------------- Video Control Registers --------------------------------------------------//
 
-// Palette register file (0x8000-0x800F, 16 entries × 8 bits)
-// Uses registers instead of SPRAM so video scanout can read simultaneously with CPU
-reg [7:0] palette_regs [0:15];
+// MAME: m_video_control[0..10], written at 0xE800-0xE80A
+// Only bits [3:0] of the address select the register (mirrored with 0x03F0)
+reg [7:0] video_control [0:10];
+integer vc_i;
 initial begin
-	integer i;
-	for (i = 0; i < 16; i = i + 1)
-		palette_regs[i] = 8'd0;
-end
-always_ff @(posedge clk_49m) begin
-	if(cs_palette && ~cpu_RnW)
-		palette_regs[cpu_A[3:0]] <= cpu_Dout;
-end
-wire [7:0] palette_D = palette_regs[cpu_A[3:0]];  // CPU read-back path
-
-//Video RAM (0x0000-0x7FFF, 32KB) - dual port: A=CPU, B=video scanout
-wire [7:0] videoram_D;
-wire [7:0] videoram_vout;
-// Apply flip and scroll to VRAM read coordinates (matching MAME screen_update)
-wire [7:0] eff_x = pix_x ^ {8{flip_x}};
-wire [7:0] scroll_y = (eff_x < 8'd192) ? scroll_reg : 8'd0;
-wire [7:0] eff_y = (v_cnt[7:0] ^ {8{flip_y}}) + scroll_y;
-wire [14:0] vram_rd_addr = {eff_y, eff_x[7:1]};
-
-dpram_dc #(.widthad_a(15)) videoram
-(
-	.clock_a(clk_49m),
-	.address_a(cpu_A[14:0]),
-	.data_a(cpu_Dout),
-	.wren_a(~n_cs_videoram & ~cpu_RnW),
-	.q_a(videoram_D),
-
-	.clock_b(clk_49m),
-	.address_b(vram_rd_addr),
-	.q_b(videoram_vout)
-);
-
-//--------------------------------------------------------- Main latch ---------------------------------------------------------//
-
-reg irq_enable = 0;
-reg flip_x = 0;
-reg flip_y = 0;
-reg stars_enable = 0;
-reg sound_mute = 0;
-always_ff @(posedge clk_49m) begin
-	if(!reset) begin
-		irq_enable <= 0;
-		flip_x <= 0;
-		flip_y <= 0;
-		stars_enable <= 0;
-		sound_mute <= 0;
-	end
-	else if(cen_3m) begin
-		if(cs_mainlatch)
-			case(cpu_A[2:0])
-				3'b000: irq_enable <= cpu_Dout[0];   // LS259 Q0: IRQ enable
-				3'b001: ;  // PAY OUT - unused
-				3'b010: ;  // Coin counter 2
-				3'b011: ;  // Coin counter 1
-				3'b100: stars_enable <= cpu_Dout[0];  // Stars enable (LS259 Q4)
-				3'b101: sound_mute <= cpu_Dout[0];    // Sound mute (LS259 Q5)
-				3'b110: flip_x <= cpu_Dout[0];        // Flip screen X (LS259 Q6)
-				3'b111: flip_y <= cpu_Dout[0];        // Flip screen Y (LS259 Q7)
-			endcase
-	end
+    for (vc_i = 0; vc_i < 11; vc_i = vc_i + 1)
+        video_control[vc_i] = 8'd0;
 end
 
-//Generate VBlank IRQ for MC6809E
-// MAME: IRQ fires every other vblank frame when irq_enable is set.
-//       IRQ is cleared when irq_enable is written to 0.
-// ALL n_irq logic is in this single always_ff to avoid multiple-driver errors.
-reg n_irq = 1;
-reg irq_toggle = 0;
-reg vblank_irq_en_last = 0;
-always_ff @(posedge clk_49m) begin
-	if(!reset) begin
-		n_irq <= 1;
-		irq_toggle <= 0;
-		vblank_irq_en_last <= 0;
-	end
-	else if(cen_6m) begin
-		vblank_irq_en_last <= vblank_irq_en;
-		// Clear IRQ when irq_enable is turned off (matches MAME irq_enable_w)
-		if(!irq_enable)
-			n_irq <= 1;
-		// Detect rising edge of vblank_irq_en pulse from k082
-		else if(vblank_irq_en && !vblank_irq_en_last) begin
-			irq_toggle <= ~irq_toggle;
-			if(!irq_toggle)  // Fire on every other vblank
-				n_irq <= 0;
-		end
-	end
+// Trigger for blitter execution (directly from Step 4)
+reg blitter_start = 0;
+
+always_ff @(posedge clk_10m) begin
+    blitter_start <= 0;
+    if(cs_vidctrl & ~n_wr) begin
+        if(cpu_A[3:0] <= 4'd10)
+            video_control[cpu_A[3:0]] <= cpu_Dout;
+        if(cpu_A[3:0] == 4'd5)
+            blitter_start <= 1;  // Writing to reg 5 triggers DMA blit
+    end
 end
 
-//-------------------------------------------------------- Video timing --------------------------------------------------------//
+//------------------------------------------------------- Sound Latch ---------------------------------------------------------//
 
-//Konami 082 custom chip - responsible for all video timings
-wire vblk, vblank_irq_en, h256;
-wire [8:0] h_cnt;
-wire [7:0] v_cnt;
-k082 F5
-(
-	.reset(1),
-	.clk(clk_49m),
-	.cen(cen_6m),
-	.h_center(h_center),
-	.v_center(v_center),
-	.n_vsync(video_vsync),
-	.sync(video_csync),
-	.n_hsync(video_hsync),
-	.vblk(vblk),
-	.vblk_irq_en(vblank_irq_en),
-	.h1(h_cnt[0]),
-	.h2(h_cnt[1]),
-	.h4(h_cnt[2]),
-	.h8(h_cnt[3]),
-	.h16(h_cnt[4]),
-	.h32(h_cnt[5]),
-	.h64(h_cnt[6]),
-	.h128(h_cnt[7]),
-	.n_h256(h_cnt[8]),
-	.h256(h256),
-	.v1(v_cnt[0]),
-	.v2(v_cnt[1]),
-	.v4(v_cnt[2]),
-	.v8(v_cnt[3]),
-	.v16(v_cnt[4]),
-	.v32(v_cnt[5]),
-	.v64(v_cnt[6]),
-	.v128(v_cnt[7])
-);
+reg [7:0] slatch = 8'd0;
+reg       slatch_wr_pulse = 0;
+always_ff @(posedge clk_10m) begin
+    slatch_wr_pulse <= 0;
+    if(cs_in0 & ~n_wr) begin
+        slatch <= cpu_Dout;
+        slatch_wr_pulse <= 1;
+    end
+end
+assign sound_latch = slatch;
+assign sound_latch_wr = slatch_wr_pulse;
 
-//--------------------------------------------------------- Starfield ----------------------------------------------------------//
+//------------------------------------------------------- Bootleg NMI ---------------------------------------------------------//
 
-// MC_STARS expects real clock signals, not narrow clock enables.
-// div[2] = ~6.144 MHz square wave (49.152/8), div[1] = ~12.288 MHz (49.152/4)
-// These have proper 50% duty cycle, matching Moon Cresta's 6/12 MHz clocks.
+// The bootleg has no MCU. It pulses NMI at reset to make the game boot.
+// MAME: m_maincpu->pulse_input_line(INPUT_LINE_NMI, attotime::zero);
+reg [3:0] nmi_boot_cnt = 4'd0;
+reg n_nmi = 1'b1;
+always_ff @(posedge clk_10m) begin
+    if(!reset) begin
+        nmi_boot_cnt <= 4'd15;
+        n_nmi <= 1'b1;
+    end
+    else if(nmi_boot_cnt > 0) begin
+        nmi_boot_cnt <= nmi_boot_cnt - 4'd1;
+        if(nmi_boot_cnt == 4'd8)
+            n_nmi <= 1'b0;  // Assert NMI
+        else if(nmi_boot_cnt == 4'd4)
+            n_nmi <= 1'b1;  // Release NMI
+    end
+end
 
-wire [1:0] star_r, star_g, star_b;
-MC_STARS stars_gen
-(
-	.I_CLK_12M(div[1]),
-	.I_CLK_6M(div[2]),
-	.I_H_FLIP(flip_x),
-	.I_V_SYNC(~video_vsync),
-//	.I_8HF(h_cnt[3] ^ flip_x),
-//	.I_256HnX(h256),
-	.I_8HF(pix_x[3] ^ flip_x),
-	.I_256HnX(1'b1),
-//  .I_256HnX(pix_x[7]),
-	.I_1VF(v_cnt[0] ^ flip_y),
-	.I_2V(v_cnt[1]),
-	.I_STARS_ON(stars_enable),
-	.I_STARS_OFFn(1'b1),
-	.I_PAUSEn(~pause),
-	.O_R(star_r),
-	.O_G(star_g),
-	.O_B(star_b),
-	.O_NOISE()
-);
+//-------------------------------------------------------- VBlank IRQ ----------------------------------------------------------//
 
-//----------------------------------------------------- Final video output -----------------------------------------------------//
+// MAME: standard IM1 interrupt, RST 38h every vblank
+// IRQ fires on vblank rising edge
+reg n_irq = 1'b1;
+reg vblank_last = 0;
+always_ff @(posedge clk_10m) begin
+    if(!reset) begin
+        n_irq <= 1'b1;
+        vblank_last <= 0;
+    end
+    else begin
+        vblank_last <= video_vblank;
+        // Assert IRQ on rising edge of vblank
+        if(video_vblank & ~vblank_last)
+            n_irq <= 1'b0;
+        // Auto-clear: Z80 IM1 acknowledges via M1+IORQ
+        if(~n_m1 & ~n_iorq)
+            n_irq <= 1'b1;
+    end
+end
 
-//Generate HBlank (active high) while the horizontal counter is between 141 and 268
-wire hblk = (h_cnt > 140 && h_cnt < 269);
+//-------------------------------------------------------- Video Timing --------------------------------------------------------//
 
-// Generate a 0-255 pixel X counter synchronized to the visible window
-// Visible pixels: h_cnt 269-511 (243 px), then 128-140 (13 px) = 256 total
-// Use h_cnt offset so pixel 0 aligns with h_cnt=269
-// Visible pixels: h_cnt 269-511 (243 px), then 128-140 (13 px) = 256 total
-// Must produce continuous pix_x 0-255 across the wrap at h_cnt 511→128
-// h_cnt 269-511: h_cnt[8]=1 (for 269-511), pix_x = h_cnt - 269
-// h_cnt 128-140: h_cnt[8]=0, pix_x = h_cnt - 128 + 243 = h_cnt + 115
-wire [7:0] pix_x = h_cnt[8] ? (h_cnt[7:0] - 8'd13) : (h_cnt[7:0] + 8'd115);
+// Kangaroo video timing from MAME:
+// screen.set_raw(10_MHz_XTAL, 320*2, 0*2, 256*2, 260, 8, 248);
+// Total: 640 pixel clocks horizontal (at 5 MHz that's 320 positions at 10 MHz)
+// But the screen uses 10 MHz as raw pixel clock with 640 total, 512 visible
+// Vertical: 260 lines total, visible 8-248 (240 lines)
+//
+// We run the pixel counter at 10 MHz (ce_pix = cen_5m for output,
+// but the counters tick every clk_10m)
 
-// Framebuffer pixel extraction: 4-bit packed pixels, 2 per byte
-wire [3:0] pixel_index = eff_x[0] ? videoram_vout[7:4] : videoram_vout[3:0];
+reg [9:0] h_cnt = 10'd0;  // 0-639
+reg [8:0] v_cnt = 9'd0;   // 0-259
 
-// Palette lookup — convert 4-bit pixel index to RGB via palette registers
-// Palette byte format (Galaxian/Konami standard): BBGGGRRR
-//   bits [2:0] = Red   (3 bits, through 1K/470/220 ohm resistors)
-//   bits [5:3] = Green (3 bits, through 1K/470/220 ohm resistors)
-//   bits [7:6] = Blue  (2 bits, through 470/220 ohm resistors)
-wire [7:0] pal_byte = palette_regs[pixel_index];
+always_ff @(posedge clk_10m) begin
+    if(!reset) begin
+        h_cnt <= 0;
+        v_cnt <= 0;
+    end
+    else begin
+        if(h_cnt == 10'd639) begin
+            h_cnt <= 0;
+            if(v_cnt == 9'd259)
+                v_cnt <= 0;
+            else
+                v_cnt <= v_cnt + 9'd1;
+        end
+        else
+            h_cnt <= h_cnt + 10'd1;
+    end
+end
 
-// Expand to 5-bit per channel for MiSTer output
-// Blank output during HBlank and VBlank to prevent ghost pixels
-wire active_video = ~hblk & ~vblk;
+// Sync and blank generation
+// MAME visible: x = 0*2 to 256*2-1 = 0 to 511, y = 8 to 247
+assign video_hblank = (h_cnt >= 10'd512);
+assign video_vblank = (v_cnt < 9'd8) | (v_cnt >= 9'd248);
+assign video_hsync  = (h_cnt >= 10'd560) & (h_cnt < 10'd624);  // ~64 clocks
+assign video_vsync  = (v_cnt >= 9'd252) & (v_cnt < 9'd256);     // ~4 lines
 
-wire pixel_is_bg = (pixel_index == 4'd0);
-wire show_stars = active_video & pixel_is_bg & stars_enable;
+//--------------------------------------------------------- Video RAM ----------------------------------------------------------//
 
-assign red   = show_stars  ? {star_r, star_r[1], 2'b00}                    :
-               active_video ? {pal_byte[2:0], pal_byte[2:1]}              : 5'd0;
-assign green = show_stars  ? {star_g, star_g[1], 2'b00}                    :
-               active_video ? {pal_byte[5:3], pal_byte[5:4]}              : 5'd0;
-assign blue  = show_stars  ? {star_b, star_b[1], 2'b00}                    :
-               active_video ? {pal_byte[7:6], pal_byte[7:6], pal_byte[7]} : 5'd0;
+// Kangaroo VRAM: 256 rows × 64 columns × 32 bits = 16384 addresses × 32 bits
+// MAME: memory_share_creator<uint32_t> m_videoram("videoram", 256*64*4, ENDIANNESS_LITTLE)
+// Each 32-bit word holds 4 pixels × 2 planes (A low nibble, B high nibble) × 4 bytes
+//
+// For FPGA: use 4 × 8-bit dpram banks to form 32-bit words.
+// Address = 14 bits (16384 entries), each entry is 4 bytes.
+// CPU writes go through videoram_write expand logic.
+// Scanout reads 32-bit words for pixel extraction.
+
+reg [7:0] vram_byte0 [0:16383];
+reg [7:0] vram_byte1 [0:16383];
+reg [7:0] vram_byte2 [0:16383];
+reg [7:0] vram_byte3 [0:16383];
+
+initial begin
+    integer vi;
+    for (vi = 0; vi < 16384; vi = vi + 1) begin
+        vram_byte0[vi] = 8'd0;
+        vram_byte1[vi] = 8'd0;
+        vram_byte2[vi] = 8'd0;
+        vram_byte3[vi] = 8'd0;
+    end
+end
+
+// Read 32-bit word from VRAM (for scanout and CPU read-back)
+function [31:0] vram_read;
+    input [13:0] addr;
+    vram_read = {vram_byte3[addr], vram_byte2[addr], vram_byte1[addr], vram_byte0[addr]};
+endfunction
+
+//-------------------------------------------------- VRAM Write Logic ----------------------------------------------------------//
+
+// MAME videoram_write: expand 8-bit CPU data into 32-bit with layer masks
+// data contains 4 2-bit values packed as DCBADCBA
+// expands into 4 bytes, each byte holding 2 bits per plane
+
+task automatic vram_write_word;
+    input [13:0] addr;
+    input [7:0]  data;
+    input [3:0]  mask;
+    reg [31:0] expdata;
+    reg [31:0] layermask;
+    reg [31:0] old_val;
+    begin
+        expdata = 32'd0;
+        if (data[0]) expdata = expdata | 32'h00000055;
+        if (data[4]) expdata = expdata | 32'h000000aa;
+        if (data[1]) expdata = expdata | 32'h00005500;
+        if (data[5]) expdata = expdata | 32'h0000aa00;
+        if (data[2]) expdata = expdata | 32'h00550000;
+        if (data[6]) expdata = expdata | 32'h00aa0000;
+        if (data[3]) expdata = expdata | 32'h55000000;
+        if (data[7]) expdata = expdata | 32'haa000000;
+
+        layermask = 32'd0;
+        if (mask[3]) layermask = layermask | 32'h30303030;
+        if (mask[2]) layermask = layermask | 32'hc0c0c0c0;
+        if (mask[1]) layermask = layermask | 32'h03030303;
+        if (mask[0]) layermask = layermask | 32'h0c0c0c0c;
+
+        old_val = {vram_byte3[addr], vram_byte2[addr], vram_byte1[addr], vram_byte0[addr]};
+        old_val = (old_val & ~layermask) | (expdata & layermask);
+
+        vram_byte0[addr] = old_val[7:0];
+        vram_byte1[addr] = old_val[15:8];
+        vram_byte2[addr] = old_val[23:16];
+        vram_byte3[addr] = old_val[31:24];
+    end
+endtask
+
+//------------------------------------------------------ DMA Blitter -----------------------------------------------------------//
+
+// MAME blitter_execute — triggered when video_control[5] is written
+// Reads from blitter ROM, writes to VRAM through videoram_write logic
+// This runs instantaneously in MAME; in FPGA we execute it over multiple clocks.
+
+// Blitter ROM: 4 x 4KB = 16KB, split into two halves of 8KB each (gfxhalfsize = 0x2000)
+// Half 0: blit0 + blit2 (low bank), Half 1: blit1 + blit3 (high bank)
+// Read address for blitter: use dedicated read ports
+
+// For blitter ROM reads, we need a second address into the blit ROMs.
+// We'll read from the ROMs using a blitter-specific address bus.
+// This requires the blit ROMs to have a second read port — use the dpram_dc port B.
+//
+// SIMPLIFICATION: Since the blitter runs during CPU time (CPU is effectively stalled
+// in real hardware during DMA), we time-multiplex the ROM address bus.
+// The blitter runs at 1 word/clock, completing in (width+1)*(height+1) clocks.
+
+reg blit_active = 0;
+reg [15:0] blit_src;
+reg [15:0] blit_dst;
+reg [7:0]  blit_width;
+reg [7:0]  blit_height;
+reg [7:0]  blit_mask;
+reg [7:0]  blit_x_cnt;
+reg [7:0]  blit_y_cnt;
+reg [15:0] blit_cur_src;
+reg [15:0] blit_cur_dst;
+
+// Blitter state machine
+localparam BLIT_IDLE = 2'd0;
+localparam BLIT_READ = 2'd1;
+localparam BLIT_WRITE = 2'd2;
+reg [1:0] blit_state = BLIT_IDLE;
+
+// Blitter ROM read (direct array access using src address)
+// gfxhalfsize = 0x2000
+// blit_rom_data_lo = blitrom[0*0x2000 + (src & 0x1FFF)] — from blit0/blit2
+// blit_rom_data_hi = blitrom[1*0x2000 + (src & 0x1FFF)] — from blit1/blit3
+wire [12:0] blit_rom_addr = blit_cur_src[12:0];  // & 0x1FFF
+wire [7:0] blit_rom_lo, blit_rom_hi;
+
+// We need dedicated blitter read ports on the blit ROMs.
+// blit0/blit2 form the low half, blit1/blit3 form the high half.
+// addr[12] selects blit0 vs blit2 (or blit1 vs blit3).
+// BUT: gfxhalfsize = total_blit_size/2 = 0x2000, so src wraps at 13 bits.
+// Low half: address 0x0000-0x0FFF = blit0, 0x1000-0x1FFF = blit2
+// High half: address 0x0000-0x0FFF = blit1, 0x1000-0x1FFF = blit3
+
+// For now, build a combined blitter ROM read using a simple registered approach.
+// The blit ROMs are already instantiated as eprom_4k with port A = CPU, port B = download.
+// We need a THIRD read for the blitter.
+//
+// PRACTICAL SOLUTION: Use registered shadow copies loaded at download time,
+// OR add the blitter as a combinational read from the same eprom_4k instances
+// by time-multiplexing. Since blitter runs when CPU is NOT accessing blit ROMs
+// (blitter writes to VRAM, not reads from blit bank), we can safely share port A.
+//
+// Actually simpler: just declare blitter ROM as a separate 16KB block RAM loaded at download.
+
+reg [7:0] blitrom [0:16383];  // 16KB blitter ROM flat
+initial begin
+    integer bi;
+    for (bi = 0; bi < 16384; bi = bi + 1)
+        blitrom[bi] = 8'd0;
+end
+
+// Load blitter ROM from ioctl (index 2)
+always_ff @(posedge clk_10m) begin
+    if(ioctl_wr) begin
+        if(blit0_cs_i) blitrom[{2'b00, ioctl_addr[11:0]}] <= ioctl_data;
+        if(blit1_cs_i) blitrom[{2'b01, ioctl_addr[11:0]}] <= ioctl_data;
+        if(blit2_cs_i) blitrom[{2'b10, ioctl_addr[11:0]}] <= ioctl_data;
+        if(blit3_cs_i) blitrom[{2'b11, ioctl_addr[11:0]}] <= ioctl_data;
+    end
+end
+
+// Blitter execution state machine
+always_ff @(posedge clk_10m) begin
+    if(!reset) begin
+        blit_active <= 0;
+        blit_state <= BLIT_IDLE;
+    end
+    else begin
+        case(blit_state)
+            BLIT_IDLE: begin
+                // CPU VRAM writes allowed only when blitter is idle (matches real HW bus-stall)
+                if(cs_videoram & ~n_wr) begin
+                    vram_write_word(cpu_A[13:0], cpu_Dout, video_control[8][3:0]);
+                end
+                if(blitter_start) begin
+                    blit_src <= {video_control[1], video_control[0]};
+                    blit_dst <= {video_control[3], video_control[2]};
+                    blit_width <= video_control[4];
+                    blit_height <= video_control[5];
+                    blit_mask <= video_control[8];
+                    // Adjust mask per MAME: OR top/bottom 2 bits during DMA
+                    blit_x_cnt <= 0;
+                    blit_y_cnt <= 0;
+                    blit_cur_src <= {video_control[1], video_control[0]};
+                    blit_cur_dst <= {video_control[3], video_control[2]};
+                    blit_active <= 1;
+                    blit_state <= BLIT_WRITE;
+                end
+            end
+
+            BLIT_WRITE: begin
+                // Compute effective addresses
+                // effdst = (dst + x) & 0x3FFF
+                // effsrc = src & (gfxhalfsize-1) = src & 0x1FFF
+                reg [13:0] effdst;
+                reg [12:0] effsrc;
+                reg [7:0] adj_mask;
+                effdst = (blit_cur_dst + {8'd0, blit_x_cnt}) & 14'h3FFF;
+                effsrc = blit_cur_src[12:0];
+
+                adj_mask = blit_mask;
+                if (adj_mask[3:2] != 0) adj_mask[3:2] = 2'b11;
+                if (adj_mask[1:0] != 0) adj_mask[1:0] = 2'b11;
+
+                // Write low half (mask & 0x05)
+                vram_write_word(effdst, blitrom[{1'b0, effsrc}], adj_mask[3:0] & 4'b0101);
+                // Write high half (mask & 0x0A)
+                vram_write_word(effdst, blitrom[{1'b1, effsrc}], adj_mask[3:0] & 4'b1010);
+
+                blit_cur_src <= blit_cur_src + 16'd1;
+
+                if(blit_x_cnt == blit_width) begin
+                    blit_x_cnt <= 0;
+                    if(blit_y_cnt == blit_height) begin
+                        blit_active <= 0;
+                        blit_state <= BLIT_IDLE;
+                    end
+                    else begin
+                        blit_y_cnt <= blit_y_cnt + 8'd1;
+                        blit_cur_dst <= blit_cur_dst + 16'd256;
+                    end
+                end
+                else begin
+                    blit_x_cnt <= blit_x_cnt + 8'd1;
+                end
+            end
+
+            default: blit_state <= BLIT_IDLE;
+        endcase
+    end
+end
+
+//----------------------------------------------- Pixel Compositing (screen_update) --------------------------------------------//
+
+// MAME screen_update variables derived from video_control registers
+wire [7:0] scrolly = video_control[6];
+wire [7:0] scrollx = video_control[7];
+wire [2:0] maska = {video_control[10][5], video_control[10][3], 1'b0}; // (vc[10] & 0x28) >> 3
+wire [2:0] maskb = video_control[10][2:0];                              // (vc[10] & 0x07)
+wire [7:0] xora = video_control[9][5] ? 8'hFF : 8'h00;
+wire [7:0] xorb = video_control[9][4] ? 8'hFF : 8'h00;
+wire       enaa = video_control[9][3];
+wire       enab = video_control[9][2];
+wire       pria = ~video_control[9][1];
+wire       prib = ~video_control[9][0];
+
+// Current scanout position (from video timing counters)
+// h_cnt runs 0-639 at 10MHz. Visible pixels are 0-511.
+// MAME iterates x in steps of 2 (x, x+1), so each MAME x maps to h_cnt/2.
+// For the FPGA, we compute pixel values on the fly during scanout.
+
+wire [8:0] scan_x = h_cnt[9:1];  // 0-319, but visible 0-255
+wire [7:0] scan_y = v_cnt[7:0];  // 0-259, visible 8-247
+
+// Plane A coordinates (with scroll and flip)
+wire [7:0] effxa = scrollx + (scan_x[7:0] ^ xora);
+wire [7:0] effya = scrolly + (scan_y ^ xora);
+
+// Plane B coordinates (no scroll, just flip)
+wire [7:0] effxb = scan_x[7:0] ^ xorb;
+wire [7:0] effyb = scan_y ^ xorb;
+
+// VRAM read for plane A
+// Address = effya + 256 * (effxa / 4), byte select = effxa % 4
+wire [13:0] vram_addr_a = {effxa[7:2], effya};
+wire [31:0] vram_word_a = {vram_byte3[vram_addr_a], vram_byte2[vram_addr_a],
+                           vram_byte1[vram_addr_a], vram_byte0[vram_addr_a]};
+wire [7:0]  vram_slice_a = (effxa[1:0] == 2'd0) ? vram_word_a[7:0] :
+                           (effxa[1:0] == 2'd1) ? vram_word_a[15:8] :
+                           (effxa[1:0] == 2'd2) ? vram_word_a[23:16] :
+                                                   vram_word_a[31:24];
+wire [3:0] pixa_raw = vram_slice_a[3:0];  // Plane A = low nibble
+
+// VRAM read for plane B
+wire [13:0] vram_addr_b = {effxb[7:2], effyb};
+wire [31:0] vram_word_b = {vram_byte3[vram_addr_b], vram_byte2[vram_addr_b],
+                           vram_byte1[vram_addr_b], vram_byte0[vram_addr_b]};
+wire [7:0]  vram_slice_b = (effxb[1:0] == 2'd0) ? vram_word_b[7:0] :
+                           (effxb[1:0] == 2'd1) ? vram_word_b[15:8] :
+                           (effxb[1:0] == 2'd2) ? vram_word_b[23:16] :
+                                                   vram_word_b[31:24];
+wire [3:0] pixb_raw = vram_slice_b[7:4];  // Plane B = high nibble
+
+// Priority compositing (MAME logic)
+// Even pixels (first of pair): full brightness, no KOS1 masking
+// Odd pixels (second of pair): apply KOS1 color mask for Z=0 pixels
+wire is_odd_pixel = h_cnt[0];
+
+wire [3:0] pixa_masked = (is_odd_pixel && !(pixa_raw[3])) ? (pixa_raw & {1'b0, maska}) : pixa_raw;
+wire [3:0] pixb_masked = (is_odd_pixel && !(pixb_raw[3])) ? (pixb_raw & {1'b0, maskb}) : pixb_raw;
+
+wire [3:0] pixa_final = is_odd_pixel ? pixa_masked : pixa_raw;
+wire [3:0] pixb_final = is_odd_pixel ? pixb_masked : pixb_raw;
+
+reg [2:0] final_color;
+always_comb begin
+    final_color = 3'd0;
+    if (enaa && (pria || pixb_final == 0))
+        final_color = final_color | pixa_final[2:0];
+    if (enab && (prib || pixa_final == 0))
+        final_color = final_color | pixb_final[2:0];
+end
+
+// Output — BGR 3-bit palette (MAME: PALETTE(config, m_palette, palette_device::BGR_3BIT))
+wire active_video = ~video_hblank & ~video_vblank;
+assign video_r = active_video ? {final_color[0], final_color[0], final_color[0]} : 3'd0;
+assign video_g = active_video ? {final_color[1], final_color[1], final_color[1]} : 3'd0;
+assign video_b = active_video ? {final_color[2], final_color[2]} : 2'd0;
 
 endmodule

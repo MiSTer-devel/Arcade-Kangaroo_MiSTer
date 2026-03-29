@@ -1,6 +1,6 @@
 //============================================================================
 //
-// Qix Platform for MiSTer
+// Kangaroo for MiSTer
 // Copyright (C) 2026 Rodimus
 // Based on Tutankham core structure
 //
@@ -204,10 +204,8 @@ assign AUDIO_MIX = 0; // no mix, true stereo
 assign LED_DISK  = 0;
 assign LED_POWER = 0;
 //assign LED_USER  = ioctl_download;
-assign LED_USER  = ioctl_download | shared_debug_led_w;
+assign LED_USER  = ioctl_download;
 assign BUTTONS = 0;
-
-wire shared_debug_led_w;
 
 ///////////////////////////////////////////////////
 
@@ -228,13 +226,11 @@ localparam CONF_STR = {
 	"P1OP,Pause when OSD is open,On,Off;",
 	"P1OQ,Dim video after 10s,On,Off;",
 	"-;",
-	"P2,Screen Centering;",
-	"P2O36,H Center,0,-1,-2,-3,-4,-5,-6,-7,+7,+6,+5,+4,+3,+2,+1;",
-	"P2O7A,V Center,0,-1,-2,-3,-4,-5,-6,-7,-8,-9,-10,-11,-12;",
-	"-;",	
+	"DIP;",
+	"-;",
 	"R0,Reset;",
-	"J1,Draw Slow,Draw Fast,Coin,Start 1P,Start 2P,Pause;",
-	"jn,A,B,Select,Start,R,L;",
+	"J1,Punch,Coin,Start 1P,Start 2P,Pause;",
+	"jn,A,Select,Start,R,L;",
 	"V,v",`BUILD_DATE
 };
 
@@ -260,7 +256,7 @@ wire        direct_video;
 
 hps_io #(.CONF_STR(CONF_STR)) hps_io
 (
-	.clk_sys(CLK_20M),
+	.clk_sys(CLK_10M),
 	.HPS_BUS(HPS_BUS),
 	.EXT_BUS(),
 	.gamma_bus(gamma_bus),
@@ -289,7 +285,7 @@ hps_io #(.CONF_STR(CONF_STR)) hps_io
 
 ////////////////////   CLOCKS   ///////////////////
 wire CLK_40M;
-wire CLK_20M;
+wire CLK_10M;
 wire locked;
 
 pll pll
@@ -297,7 +293,7 @@ pll pll
     .refclk(CLK_50M),
     .rst(0),
     .outclk_0(CLK_40M),
-    .outclk_1(CLK_20M),
+    .outclk_1(CLK_10M),
     .locked(locked)
 );
 
@@ -325,7 +321,7 @@ reg btn_service4 = 0;
 
 wire pressed = ~ps2_key[9];
 wire [7:0] code = ps2_key[7:0];
-always @(posedge CLK_20M) begin
+always @(posedge CLK_10M) begin
 	reg old_state;
 	old_state <= ps2_key[10];
 	if(old_state != ps2_key[10]) begin
@@ -357,16 +353,14 @@ wire m_up1      = btn_up        | joystick_0[3];
 wire m_down1    = btn_down      | joystick_0[2];
 wire m_left1    = btn_left      | joystick_0[1];
 wire m_right1   = btn_right     | joystick_0[0];
-wire m_btn1_p1  = btn_fire      | joystick_0[4];
-wire m_btn2_p1  = btn_fire2     | joystick_0[5];
+wire m_punch_p1 = btn_fire      | joystick_0[4];
 
 //Player 2
 wire m_up2      = btn_up		| joystick_1[3];
 wire m_down2    = btn_down      | joystick_1[2];
 wire m_left2    = btn_left      | joystick_1[1];
 wire m_right2   = btn_right     | joystick_1[0];
-wire m_btn1_p2  = btn_fire      | joystick_1[4];
-wire m_btn2_p2  = btn_fire2     | joystick_1[5];
+wire m_punch_p2 = btn_fire      | joystick_1[4];
 
 //Start/Coin
 wire m_start1   = btn_1p_start  | joystick_0[7];
@@ -384,10 +378,10 @@ wire m_service4 = btn_service4                 ;
 // PAUSE SYSTEM
 wire pause_cpu;
 wire [23:0] rgb_out;
-pause #(8,8,8,20) pause
+pause #(8,8,8,10) pause
 (
 	.*,
-	.clk_sys(CLK_20M),
+	.clk_sys(CLK_10M),
 	.user_button(m_pause),
 	.pause_request(1'b0),
 	.options(~status[26:25])
@@ -397,10 +391,10 @@ pause #(8,8,8,20) pause
 
 wire hblank, vblank;
 wire hs, vs;
-wire [7:0] r, g, b;  // 8-bit RGB direct from Qix core
+wire [7:0] r, g, b;
 wire ce_pix;
 
-wire rotate_ccw = 1;  // Qix/Complex X are ROT270 (CCW)
+wire rotate_ccw = 0;  // Kangaroo is ROT90 (CW)
 wire no_rotate = status[12] | direct_video;
 wire flip = status[11] | ~no_rotate;
 screen_rotate screen_rotate(.*);
@@ -420,28 +414,24 @@ arcade_video #(256,24) arcade_video
 	.fx(status[17:15])
 );
 
-//Instantiate Qix top-level platform module
-Qix QIX_inst
+// DIP switch
+wire [7:0] sw0 = status[7:0];  // Will be refined when DIP mapping is finalized
+
+//Instantiate Kangaroo top-level game module
+Kangaroo kangaroo_inst
 (
-	.reset(reset),
+	.reset(~reset),       // MiSTer reset is active-high; invert for active-low game modules
 
-	.clk_20m(CLK_20M),
+	.clk_10m(CLK_10M),
 
-	.coin({~m_coin2, ~m_coin1}),
-	.start_buttons({~m_start2, ~m_start1}),
+	// IN0: {coin_r, coin_l, start2, start1, service} active-high
+	.in0({m_coin2, m_coin1, m_start2, m_start1, m_service}),
+	// IN1: {punch, down, up, left, right} P1 active-high
+	.in1({m_punch_p1, m_down1, m_up1, m_left1, m_right1}),
+	// IN2: {punch, down, up, left, right} P2 active-high
+	.in2({m_punch_p2, m_down2, m_up2, m_left2, m_right2}),
+	.dsw0(sw0),
 
-	.p1_joystick({~m_right1, ~m_left1, ~m_down1, ~m_up1}),
-	.p2_joystick({~m_right2, ~m_left2, ~m_down2, ~m_up2}),
-	.p1_btn1(~m_btn1_p1),
-	.p1_btn2(~m_btn2_p1),
-	.p2_btn1(~m_btn1_p2),
-	.p2_btn2(~m_btn2_p2),
-	
-	.service(~m_service),
-	.service2(~m_service2),
-	.service3(~m_service3),
-	.service4(~m_service4),
-	
 	.video_hsync(hs),
 	.video_vsync(vs),
 	.video_vblank(vblank),
@@ -455,29 +445,21 @@ Qix QIX_inst
 	.sound_l(audio_l),
 	.sound_r(audio_r),
 
-    .ioctl_addr(ioctl_addr),
-    .ioctl_wr(ioctl_wr && (ioctl_index == 8'd0)),
-    .ioctl_data(ioctl_dout),
-    .ioctl_index(ioctl_index),
+	.ioctl_addr(ioctl_addr),
+	.ioctl_data(ioctl_dout),
+	.ioctl_wr(ioctl_wr),
+	.ioctl_index(ioctl_index),
 
 	.pause(pause_cpu),
-	.shared_debug_led(shared_debug_led_w),
 
-	.hs_address(nvram_address),
-	.hs_data_out(nvram_data_out),
-	.hs_data_in(nvram_data_in),
-	.hs_write(nvram_write)
+	.hs_address(16'd0),
+	.hs_data_in(8'd0),
+	.hs_data_out(),
+	.hs_write(1'b0)
 );
 
-// DIRECT NVRAM LOAD/SAVE
-wire nvram_download = ioctl_download && (ioctl_index == 8'd4);
-wire nvram_upload   = ioctl_upload && (ioctl_index == 8'd4);
-wire [15:0] nvram_address = ioctl_addr[15:0];
-wire [7:0]  nvram_data_in = ioctl_dout;
-wire        nvram_write   = nvram_download && ioctl_wr;
-wire [7:0]  nvram_data_out;
-
-assign ioctl_din = nvram_data_out;
+// Hiscore disabled for now
+assign ioctl_din = 8'd0;
 assign ioctl_upload_req = 0;
 
 endmodule

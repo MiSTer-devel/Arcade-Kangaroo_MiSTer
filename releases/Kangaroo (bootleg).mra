@@ -1,0 +1,66 @@
+<misterromdescription>
+    <name>Kangaroo (bootleg)</name>
+    <region>World</region>
+    <homebrew>no</homebrew>
+    <bootleg>yes</bootleg>
+    <version></version>
+    <alternative></alternative>
+    <platform></platform>
+    <series>Kangaroo</series>
+    <year>1982</year>
+    <manufacturer>Sun Electronics (bootleg)</manufacturer>
+    <category>Platform</category>
+
+    <setname>kangaroob</setname>
+    <parent>kangaroo</parent>
+    <mameversion>0270</mameversion>
+    <rbf>Kangaroo</rbf>
+    <about></about>
+
+    <resolution>15kHz</resolution>
+    <rotation>vertical (cw)</rotation>
+    <flip>no</flip>
+
+    <players>2 (alternating)</players>
+    <joystick>4-way</joystick>
+    <special_controls></special_controls>
+    <num_buttons>1</num_buttons>
+    <button_names>Punch</button_names>
+
+    <switches default="00">
+        <dip bits="0"     name="Lives" ids="5,3"/>
+        <dip bits="1"     name="Difficulty" ids="Hard,Easy"/>
+        <dip bits="2"     name="Demo Sounds" ids="Off,On"/>
+        <dip bits="3"     name="Cabinet" ids="Cocktail,Upright"/>
+        <dip bits="4,7"   name="Coinage" ids="1C/1Cr,1C/2Cr,1C/3Cr,1C/4Cr,1C/5Cr,1C/6Cr,2C/1Cr,3C/1Cr,Free Play,1C/1Cr,1C/1Cr,1C/1Cr,1C/1Cr,1C/1Cr,1C/1Cr,1C/1Cr"/>
+    </switches>
+
+    <!-- Index 0: Main CPU ROMs (24KB) -->
+    <rom index="0" md5="none" zip="kangaroob.zip|kangaroo.zip">
+        <part crc="0d18c581" name="k1.ic7"/>
+        <part crc="5978d37a" name="k2.ic8"/>
+        <part crc="522d1097" name="k3.ic9"/>
+        <part crc="063da970" name="k4.ic10"/>
+        <part crc="9e5cf8ca" name="k5.ic16"/>
+        <part crc="7644504a" name="k6.ic17"/>
+    </rom>
+
+    <!-- Index 1: Sound CPU ROM (4KB) -->
+    <rom index="1" md5="none" zip="kangaroob.zip|kangaroo.zip">
+        <part crc="fb449bfd" name="k7.ic24"/>
+    </rom>
+
+    <!-- Index 2: Blitter GFX ROMs (16KB) -->
+    <rom index="2" md5="none" zip="kangaroob.zip|kangaroo.zip">
+        <part crc="c0446ca6" name="k10.ic76"/>
+        <part crc="72c52695" name="k11.ic77"/>
+        <part crc="e4cb26c2" name="k8.ic52"/>
+        <part crc="9e6a599f" name="k9.ic53"/>
+    </rom>
+
+    <rom index="3"></rom>
+    <rom index="4"></rom>
+
+    <remark>Bootleg variant — no MCU protection</remark>
+    <mratimestamp>20260329000000</mratimestamp>
+</misterromdescription>
