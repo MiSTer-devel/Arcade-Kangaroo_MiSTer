@@ -1,0 +1,198 @@
+// ===================================================================
+    // Ready-to-use wrapper modules for each real MB88 variant
+    // (instantiate these instead of the raw mb88_cpu)
+    // ===================================================================
+
+    // MB88201 (9-bit program, 4-bit data)
+    module mb88201_cpu (
+        input  wire                     clk,
+        input  wire                     rst_n,
+        output wire [8:0]               prog_addr,
+        input  wire [7:0]               prog_data,
+        output wire [3:0]               data_addr,
+        output wire [3:0]               data_wdata,
+        input  wire [3:0]               data_rdata,
+        output wire                     data_we,
+        input  wire [3:0]               k_in,
+        output wire [7:0]               o_out,
+        output wire [3:0]               p_out,
+        inout  wire [3:0]               r0,
+        inout  wire [3:0]               r1,
+        inout  wire [3:0]               r2,
+        inout  wire [3:0]               r3,
+        input  wire                     si_in,
+        output wire                     so_out,
+        input  wire                     irq_in,
+        input  wire                     tc_in
+    );
+        mb88_cpu #(
+            .PROGRAM_ADDR_WIDTH(9),
+            .DATA_ADDR_WIDTH(4)
+        ) core (
+            .clk        (clk),
+            .rst_n      (rst_n),
+            .prog_addr  (prog_addr),
+            .prog_data  (prog_data),
+            .data_addr  (data_addr),
+            .data_wdata (data_wdata),
+            .data_rdata (data_rdata),
+            .data_we    (data_we),
+            .k_in       (k_in),
+            .o_out      (o_out),
+            .p_out      (p_out),
+            .r0         (r0),
+            .r1         (r1),
+            .r2         (r2),
+            .r3         (r3),
+            .si_in      (si_in),
+            .so_out     (so_out),
+            .irq_in     (irq_in),
+            .tc_in      (tc_in)
+        );
+    endmodule
+
+    // MB88202 (10-bit program, 5-bit data)
+    module mb88202_cpu (
+        input  wire                     clk,
+        input  wire                     rst_n,
+        output wire [9:0]               prog_addr,
+        input  wire [7:0]               prog_data,
+        output wire [4:0]               data_addr,
+        output wire [3:0]               data_wdata,
+        input  wire [3:0]               data_rdata,
+        output wire                     data_we,
+        input  wire [3:0]               k_in,
+        output wire [7:0]               o_out,
+        output wire [3:0]               p_out,
+        inout  wire [3:0]               r0,
+        inout  wire [3:0]               r1,
+        inout  wire [3:0]               r2,
+        inout  wire [3:0]               r3,
+        input  wire                     si_in,
+        output wire                     so_out,
+        input  wire                     irq_in,
+        input  wire                     tc_in
+    );
+        mb88_cpu #(
+            .PROGRAM_ADDR_WIDTH(10),
+            .DATA_ADDR_WIDTH(5)
+        ) core (
+            .clk        (clk),
+            .rst_n      (rst_n),
+            .prog_addr  (prog_addr),
+            .prog_data  (prog_data),
+            .data_addr  (data_addr),
+            .data_wdata (data_wdata),
+            .data_rdata (data_rdata),
+            .data_we    (data_we),
+            .k_in       (k_in),
+            .o_out      (o_out),
+            .p_out      (p_out),
+            .r0         (r0),
+            .r1         (r1),
+            .r2         (r2),
+            .r3         (r3),
+            .si_in      (si_in),
+            .so_out     (so_out),
+            .irq_in     (irq_in),
+            .tc_in      (tc_in)
+        );
+    endmodule
+
+    // MB8841 / MB8842 (11-bit program, 7-bit data)
+    module mb8841_cpu (
+        input  wire                     clk,
+        input  wire                     rst_n,
+        output wire [10:0]              prog_addr,
+        input  wire [7:0]               prog_data,
+        output wire [6:0]               data_addr,
+        output wire [3:0]               data_wdata,
+        input  wire [3:0]               data_rdata,
+        output wire                     data_we,
+        input  wire [3:0]               k_in,
+        output wire [7:0]               o_out,
+        output wire [3:0]               p_out,
+        inout  wire [3:0]               r0,
+        inout  wire [3:0]               r1,
+        inout  wire [3:0]               r2,
+        inout  wire [3:0]               r3,
+        input  wire                     si_in,
+        output wire                     so_out,
+        input  wire                     irq_in,
+        input  wire                     tc_in
+    );
+        mb88_cpu #(
+            .PROGRAM_ADDR_WIDTH(11),
+            .DATA_ADDR_WIDTH(7)
+        ) core (
+            .clk        (clk),
+            .rst_n      (rst_n),
+            .prog_addr  (prog_addr),
+            .prog_data  (prog_data),
+            .data_addr  (data_addr),
+            .data_wdata (data_wdata),
+            .data_rdata (data_rdata),
+            .data_we    (data_we),
+            .k_in       (k_in),
+            .o_out      (o_out),
+            .p_out      (p_out),
+            .r0         (r0),
+            .r1         (r1),
+            .r2         (r2),
+            .r3         (r3),
+            .si_in      (si_in),
+            .so_out     (so_out),
+            .irq_in     (irq_in),
+            .tc_in      (tc_in)
+        );
+    endmodule
+
+    // MB8843 / MB8844 (10-bit program, 6-bit data)
+    module mb8843_cpu (
+        input  wire                     clk,
+        input  wire                     rst_n,
+        output wire [9:0]               prog_addr,
+        input  wire [7:0]               prog_data,
+        output wire [5:0]               data_addr,
+        output wire [3:0]               data_wdata,
+        input  wire [3:0]               data_rdata,
+        output wire                     data_we,
+        input  wire [3:0]               k_in,
+        output wire [7:0]               o_out,
+        output wire [3:0]               p_out,
+        inout  wire [3:0]               r0,
+        inout  wire [3:0]               r1,
+        inout  wire [3:0]               r2,
+        inout  wire [3:0]               r3,
+        input  wire                     si_in,
+        output wire                     so_out,
+        input  wire                     irq_in,
+        input  wire                     tc_in
+    );
+        mb88_cpu #(
+            .PROGRAM_ADDR_WIDTH(10),
+            .DATA_ADDR_WIDTH(6)
+        ) core (
+            .clk        (clk),
+            .rst_n      (rst_n),
+            .prog_addr  (prog_addr),
+            .prog_data  (prog_data),
+            .data_addr  (data_addr),
+            .data_wdata (data_wdata),
+            .data_rdata (data_rdata),
+            .data_we    (data_we),
+            .k_in       (k_in),
+            .o_out      (o_out),
+            .p_out      (p_out),
+            .r0         (r0),
+            .r1         (r1),
+            .r2         (r2),
+            .r3         (r3),
+            .si_in      (si_in),
+            .so_out     (so_out),
+            .irq_in     (irq_in),
+            .tc_in      (tc_in)
+        );
+    endmodule
+
+endmodule
