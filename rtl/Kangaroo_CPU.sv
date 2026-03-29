@@ -667,16 +667,22 @@ wire [13:0] scan_addr_b_w = {effxb[7:2], effyb};
 // Mux port B address: plane A on even h_cnt, plane B on odd h_cnt
 assign vram_addr_b = h_cnt[0] ? scan_addr_b_w : scan_addr_a_w;
 
+reg [1:0] effxa_slice_hold, effxb_slice_hold;
+
 always_ff @(posedge clk_10m) begin
-    if (h_cnt[0]) begin
-        // Odd clock: plane A data now valid from address presented on even clock
-        scan_word_a <= {vram_hi_qb, vram_lo_qb};
-        scan_effxa_slice <= effxa[1:0];
+    if (!h_cnt[0]) begin
+        // Even clock: present plane A address, capture its slice index for next cycle
+        effxa_slice_hold <= effxa[1:0];
+        // Also latch plane B data (valid from address presented on previous odd clock)
+        scan_word_b <= {vram_hi_qb, vram_lo_qb};
+        scan_effxb_slice <= effxb_slice_hold;
     end
     else begin
-        // Even clock: plane B data now valid from address presented on odd clock
-        scan_word_b <= {vram_hi_qb, vram_lo_qb};
-        scan_effxb_slice <= effxb[1:0];
+        // Odd clock: present plane B address, capture its slice index for next cycle
+        effxb_slice_hold <= effxb[1:0];
+        // Also latch plane A data (valid from address presented on previous even clock)
+        scan_word_a <= {vram_hi_qb, vram_lo_qb};
+        scan_effxa_slice <= effxa_slice_hold;
     end
 end
 
