@@ -469,6 +469,7 @@ localparam ST_BLIT_RMW_WR_LO = 4'd6;
 localparam ST_BLIT_RMW_RD2   = 4'd7;
 localparam ST_BLIT_RMW_WR_HI = 4'd8;
 localparam ST_BLIT_NEXT   = 4'd9;
+localparam ST_CPU_RMW_RD2 = 4'd10;
 
 reg [3:0]  vram_state = ST_IDLE;
 reg [7:0]  blit_width;
@@ -524,12 +525,18 @@ always_ff @(posedge clk_10m) begin
                 end
             end
 
-            //--- CPU VRAM write (2-cycle RMW) ---
+            //--- CPU VRAM write (3-cycle RMW: addr → wait → read+compute → write) ---
             ST_CPU_RMW_RD: begin
-                // Read data available this cycle (registered output from dpram)
-                rmw_old_word <= {vram_hi_qa, vram_lo_qa};
+                // Address was presented last cycle. dpram output will be valid NEXT cycle.
+                // Pre-compute expand/mask while waiting for RAM.
                 rmw_expdata  <= expand_data(cpu_wr_data);
                 rmw_layermask <= build_layermask(cpu_wr_mask);
+                vram_state <= ST_CPU_RMW_RD2;
+            end
+
+            ST_CPU_RMW_RD2: begin
+                // NOW the dpram output is valid — latch it
+                rmw_old_word <= {vram_hi_qa, vram_lo_qa};
                 vram_state <= ST_CPU_RMW_WR;
             end
 
@@ -562,9 +569,14 @@ always_ff @(posedge clk_10m) begin
             end
 
             ST_BLIT_RMW_RD: begin
-                // Capture high-half ROM data
+                // Capture high-half ROM data (blitrom has 1-cycle latency, presented last cycle)
                 blit_rom_data_hi <= blitrom_qa;
-                // VRAM read data now available
+                // VRAM address was presented last cycle — output valid NEXT cycle
+                vram_state <= ST_BLIT_RMW_RD2;
+            end
+
+            ST_BLIT_RMW_RD2: begin
+                // NOW VRAM output is valid — latch it
                 rmw_old_word <= {vram_hi_qa, vram_lo_qa};
                 vram_state <= ST_BLIT_RMW_WR_LO;
             end
@@ -639,44 +651,45 @@ wire [7:0] effya = scrolly + (scan_y ^ xora);
 wire [7:0] effxb = scan_x[7:0] ^ xorb;
 wire [7:0] effyb = scan_y ^ xorb;
 
-reg [13:0] scan_addr_a, scan_addr_b;
+// Scanout pipeline — locked to pixel clock (h_cnt[0])
+// h_cnt[0]=0: present plane A address → dpram latches internally
+// h_cnt[0]=1: plane A data valid, present plane B address
+// Next h_cnt[0]=0: plane B data valid, latch both, present next plane A address
+//
+// This gives us both plane A and B data valid at each pixel boundary.
+
 reg [31:0] scan_word_a, scan_word_b;
-reg        scan_phase = 0;
+reg [1:0]  scan_effxa_slice, scan_effxb_slice;
 
-// Delayed slice index (effx[1:0]) so it matches the latched VRAM word
-reg [1:0] slice_a_dly, slice_b_dly;
+wire [13:0] scan_addr_a_w = {effxa[7:2], effya};
+wire [13:0] scan_addr_b_w = {effxb[7:2], effyb};
 
-always_comb begin
-    scan_addr_a = {effxa[7:2], effya};
-    scan_addr_b = {effxb[7:2], effyb};
-end
-
-assign vram_addr_b = scan_phase ? scan_addr_b : scan_addr_a;
+// Mux port B address: plane A on even h_cnt, plane B on odd h_cnt
+assign vram_addr_b = h_cnt[0] ? scan_addr_b_w : scan_addr_a_w;
 
 always_ff @(posedge clk_10m) begin
-    scan_phase <= ~scan_phase;
-
-    // latch slice index every clock (this will be 1 clock behind the current effx)
-    slice_a_dly <= effxa[1:0];
-    slice_b_dly <= effxb[1:0];
-
-    // latch VRAM data (1-cycle latency)
-    if (scan_phase)      // just presented A → data now available for A
+    if (h_cnt[0]) begin
+        // Odd clock: plane A data now valid from address presented on even clock
         scan_word_a <= {vram_hi_qb, vram_lo_qb};
-    else
+        scan_effxa_slice <= effxa[1:0];
+    end
+    else begin
+        // Even clock: plane B data now valid from address presented on odd clock
         scan_word_b <= {vram_hi_qb, vram_lo_qb};
+        scan_effxb_slice <= effxb[1:0];
+    end
 end
 
 // Extract pixel bytes from latched 32-bit words
-wire [7:0] vram_slice_a = (slice_a_dly == 2'd0) ? scan_word_a[7:0] :
-                          (slice_a_dly == 2'd1) ? scan_word_a[15:8] :
-                          (slice_a_dly == 2'd2) ? scan_word_a[23:16] :
-                                                  scan_word_a[31:24];
+wire [7:0] vram_slice_a = (scan_effxa_slice == 2'd0) ? scan_word_a[7:0] :
+                          (scan_effxa_slice == 2'd1) ? scan_word_a[15:8] :
+                          (scan_effxa_slice == 2'd2) ? scan_word_a[23:16] :
+                                                       scan_word_a[31:24];
 
-wire [7:0] vram_slice_b = (slice_b_dly == 2'd0) ? scan_word_b[7:0] :
-                          (slice_b_dly == 2'd1) ? scan_word_b[15:8] :
-                          (slice_b_dly == 2'd2) ? scan_word_b[23:16] :
-                                                  scan_word_b[31:24];
+wire [7:0] vram_slice_b = (scan_effxb_slice == 2'd0) ? scan_word_b[7:0] :
+                          (scan_effxb_slice == 2'd1) ? scan_word_b[15:8] :
+                          (scan_effxb_slice == 2'd2) ? scan_word_b[23:16] :
+                                                       scan_word_b[31:24];
 
 wire [3:0] pixa_raw = vram_slice_a[3:0];   // Plane A = low nibble
 wire [3:0] pixb_raw = vram_slice_b[7:4];   // Plane B = high nibble
