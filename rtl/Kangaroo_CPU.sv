@@ -339,220 +339,278 @@ assign video_vsync  = (v_cnt >= 9'd252) & (v_cnt < 9'd256);     // ~4 lines
 
 //--------------------------------------------------------- Video RAM ----------------------------------------------------------//
 
-// Kangaroo VRAM: 256 rows × 64 columns × 32 bits = 16384 addresses × 32 bits
-// MAME: memory_share_creator<uint32_t> m_videoram("videoram", 256*64*4, ENDIANNESS_LITTLE)
-// Each 32-bit word holds 4 pixels × 2 planes (A low nibble, B high nibble) × 4 bytes
-//
-// For FPGA: use 4 × 8-bit dpram banks to form 32-bit words.
-// Address = 14 bits (16384 entries), each entry is 4 bytes.
-// CPU writes go through videoram_write expand logic.
-// Scanout reads 32-bit words for pixel extraction.
+// Kangaroo VRAM: 16384 addresses × 32 bits (4 bytes per word, 2 planes × 4 pixels)
+// Split into two 16-bit-wide dpram_dc instances (lo=bytes 0,1  hi=bytes 2,3)
+// Port A = CPU/blitter read-modify-write
+// Port B = video scanout (read-only)
 
-reg [7:0] vram_byte0 [0:16383];
-reg [7:0] vram_byte1 [0:16383];
-reg [7:0] vram_byte2 [0:16383];
-reg [7:0] vram_byte3 [0:16383];
+wire [15:0] vram_lo_qa, vram_hi_qa;   // Port A read data (CPU/blitter side)
+wire [15:0] vram_lo_qb, vram_hi_qb;   // Port B read data (scanout side)
+reg  [13:0] vram_addr_a;
+reg  [15:0] vram_lo_da, vram_hi_da;
+reg         vram_we_a;
+wire [13:0] vram_addr_b;               // Scanout address (active accent accent driven by compositing logic)
 
-initial begin
-    integer vi;
-    for (vi = 0; vi < 16384; vi = vi + 1) begin
-        vram_byte0[vi] = 8'd0;
-        vram_byte1[vi] = 8'd0;
-        vram_byte2[vi] = 8'd0;
-        vram_byte3[vi] = 8'd0;
+dpram_dc #(.widthad_a(14), .width_a(16)) vram_lo
+(
+    .clock_a(clk_10m),
+    .address_a(vram_addr_a),
+    .data_a(vram_lo_da),
+    .wren_a(vram_we_a),
+    .q_a(vram_lo_qa),
+
+    .clock_b(clk_10m),
+    .address_b(vram_addr_b),
+    .data_b(16'd0),
+    .wren_b(1'b0),
+    .q_b(vram_lo_qb)
+);
+
+dpram_dc #(.widthad_a(14), .width_a(16)) vram_hi
+(
+    .clock_a(clk_10m),
+    .address_a(vram_addr_a),
+    .data_a(vram_hi_da),
+    .wren_a(vram_we_a),
+    .q_a(vram_hi_qa),
+
+    .clock_b(clk_10m),
+    .address_b(vram_addr_b),
+    .data_b(16'd0),
+    .wren_b(1'b0),
+    .q_b(vram_hi_qb)
+);
+
+//------------------------------------------------ VRAM Expand/Mask Functions --------------------------------------------------//
+
+// MAME videoram_write expand logic — pure combinational functions
+// Expand 8-bit CPU data to 32-bit (DCBADCBA → 4 bytes)
+function [31:0] expand_data;
+    input [7:0] data;
+    reg [31:0] e;
+    begin
+        e = 32'd0;
+        if (data[0]) e = e | 32'h00000055;
+        if (data[4]) e = e | 32'h000000aa;
+        if (data[1]) e = e | 32'h00005500;
+        if (data[5]) e = e | 32'h0000aa00;
+        if (data[2]) e = e | 32'h00550000;
+        if (data[6]) e = e | 32'h00aa0000;
+        if (data[3]) e = e | 32'h55000000;
+        if (data[7]) e = e | 32'haa000000;
+        expand_data = e;
     end
-end
-
-// Read 32-bit word from VRAM (for scanout and CPU read-back)
-function [31:0] vram_read;
-    input [13:0] addr;
-    vram_read = {vram_byte3[addr], vram_byte2[addr], vram_byte1[addr], vram_byte0[addr]};
 endfunction
 
-//-------------------------------------------------- VRAM Write Logic ----------------------------------------------------------//
-
-// MAME videoram_write: expand 8-bit CPU data into 32-bit with layer masks
-// data contains 4 2-bit values packed as DCBADCBA
-// expands into 4 bytes, each byte holding 2 bits per plane
-
-task automatic vram_write_word;
-    input [13:0] addr;
-    input [7:0]  data;
-    input [3:0]  mask;
-    reg [31:0] expdata;
-    reg [31:0] layermask;
-    reg [31:0] old_val;
+// Build layer mask from 4-bit mask value
+function [31:0] build_layermask;
+    input [3:0] mask;
+    reg [31:0] m;
     begin
-        expdata = 32'd0;
-        if (data[0]) expdata = expdata | 32'h00000055;
-        if (data[4]) expdata = expdata | 32'h000000aa;
-        if (data[1]) expdata = expdata | 32'h00005500;
-        if (data[5]) expdata = expdata | 32'h0000aa00;
-        if (data[2]) expdata = expdata | 32'h00550000;
-        if (data[6]) expdata = expdata | 32'h00aa0000;
-        if (data[3]) expdata = expdata | 32'h55000000;
-        if (data[7]) expdata = expdata | 32'haa000000;
-
-        layermask = 32'd0;
-        if (mask[3]) layermask = layermask | 32'h30303030;
-        if (mask[2]) layermask = layermask | 32'hc0c0c0c0;
-        if (mask[1]) layermask = layermask | 32'h03030303;
-        if (mask[0]) layermask = layermask | 32'h0c0c0c0c;
-
-        old_val = {vram_byte3[addr], vram_byte2[addr], vram_byte1[addr], vram_byte0[addr]};
-        old_val = (old_val & ~layermask) | (expdata & layermask);
-
-        vram_byte0[addr] = old_val[7:0];
-        vram_byte1[addr] = old_val[15:8];
-        vram_byte2[addr] = old_val[23:16];
-        vram_byte3[addr] = old_val[31:24];
+        m = 32'd0;
+        if (mask[3]) m = m | 32'h30303030;
+        if (mask[2]) m = m | 32'hc0c0c0c0;
+        if (mask[1]) m = m | 32'h03030303;
+        if (mask[0]) m = m | 32'h0c0c0c0c;
+        build_layermask = m;
     end
-endtask
+endfunction
+
+//------------------------------------------------------ Blitter ROM -----------------------------------------------------------//
+
+// 16KB blitter ROM — single dpram_dc, port A = blitter read, port B = ioctl download
+wire [7:0] blitrom_qa;
+reg  [13:0] blitrom_addr_a;
+
+// Compute ioctl write address for blitter ROM download
+// blit0 → 0x0000-0x0FFF, blit1 → 0x1000-0x1FFF, blit2 → 0x2000-0x2FFF, blit3 → 0x3000-0x3FFF
+wire [13:0] blitrom_dl_addr = blit0_cs_i ? {2'b00, ioctl_addr[11:0]} :
+                               blit1_cs_i ? {2'b01, ioctl_addr[11:0]} :
+                               blit2_cs_i ? {2'b10, ioctl_addr[11:0]} :
+                               blit3_cs_i ? {2'b11, ioctl_addr[11:0]} :
+                               14'd0;
+wire blitrom_dl_wr = ioctl_wr & (blit0_cs_i | blit1_cs_i | blit2_cs_i | blit3_cs_i);
+
+dpram_dc #(.widthad_a(14), .width_a(8)) blitrom_mem
+(
+    .clock_a(clk_10m),
+    .address_a(blitrom_addr_a),
+    .data_a(8'd0),
+    .wren_a(1'b0),
+    .q_a(blitrom_qa),
+
+    .clock_b(clk_10m),
+    .address_b(blitrom_dl_addr),
+    .data_b(ioctl_data),
+    .wren_b(blitrom_dl_wr),
+    .q_b()
+);
 
 //------------------------------------------------------ DMA Blitter -----------------------------------------------------------//
 
-// MAME blitter_execute — triggered when video_control[5] is written
-// Reads from blitter ROM, writes to VRAM through videoram_write logic
-// This runs instantaneously in MAME; in FPGA we execute it over multiple clocks.
+// Pipelined read-modify-write state machine:
+//   IDLE     — wait for blitter_start or CPU VRAM write
+//   RMW_READ — present address to VRAM port A, wait 1 cycle for read data
+//   RMW_WRITE— compute new value, write back to VRAM port A
+//   BLIT_SETUP — load blitter parameters
+//   BLIT_READ  — present blitrom address, wait for ROM data
+//   BLIT_RMW_RD — present VRAM dest address, wait for old data
+//   BLIT_RMW_WR_LO — write low-half blit result to VRAM
+//   BLIT_RMW_RD2 — re-read VRAM for high-half blit
+//   BLIT_RMW_WR_HI — write high-half blit result, advance to next pixel
 
-// Blitter ROM: 4 x 4KB = 16KB, split into two halves of 8KB each (gfxhalfsize = 0x2000)
-// Half 0: blit0 + blit2 (low bank), Half 1: blit1 + blit3 (high bank)
-// Read address for blitter: use dedicated read ports
+localparam ST_IDLE        = 4'd0;
+localparam ST_CPU_RMW_RD  = 4'd1;
+localparam ST_CPU_RMW_WR  = 4'd2;
+localparam ST_BLIT_SETUP  = 4'd3;
+localparam ST_BLIT_ROMRD  = 4'd4;
+localparam ST_BLIT_RMW_RD = 4'd5;
+localparam ST_BLIT_RMW_WR_LO = 4'd6;
+localparam ST_BLIT_RMW_RD2   = 4'd7;
+localparam ST_BLIT_RMW_WR_HI = 4'd8;
+localparam ST_BLIT_NEXT   = 4'd9;
 
-// For blitter ROM reads, we need a second address into the blit ROMs.
-// We'll read from the ROMs using a blitter-specific address bus.
-// This requires the blit ROMs to have a second read port — use the dpram_dc port B.
-//
-// SIMPLIFICATION: Since the blitter runs during CPU time (CPU is effectively stalled
-// in real hardware during DMA), we time-multiplex the ROM address bus.
-// The blitter runs at 1 word/clock, completing in (width+1)*(height+1) clocks.
-
-reg blit_active = 0;
-reg [15:0] blit_src;
-reg [15:0] blit_dst;
+reg [3:0]  vram_state = ST_IDLE;
 reg [7:0]  blit_width;
 reg [7:0]  blit_height;
-reg [7:0]  blit_mask;
 reg [7:0]  blit_x_cnt;
 reg [7:0]  blit_y_cnt;
 reg [15:0] blit_cur_src;
 reg [15:0] blit_cur_dst;
+reg [7:0]  blit_adj_mask;
+reg [7:0]  blit_rom_data_lo;
+reg [7:0]  blit_rom_data_hi;
 
-// Blitter state machine
-localparam BLIT_IDLE = 2'd0;
-localparam BLIT_READ = 2'd1;
-localparam BLIT_WRITE = 2'd2;
-reg [1:0] blit_state = BLIT_IDLE;
+// Registered copies of CPU write params (captured in IDLE)
+reg [13:0] cpu_wr_addr;
+reg [7:0]  cpu_wr_data;
+reg [3:0]  cpu_wr_mask;
 
-// Blitter ROM read (direct array access using src address)
-// gfxhalfsize = 0x2000
-// blit_rom_data_lo = blitrom[0*0x2000 + (src & 0x1FFF)] — from blit0/blit2
-// blit_rom_data_hi = blitrom[1*0x2000 + (src & 0x1FFF)] — from blit1/blit3
-wire [12:0] blit_rom_addr = blit_cur_src[12:0];  // & 0x1FFF
-wire [7:0] blit_rom_lo, blit_rom_hi;
+// Read-modify-write intermediates
+reg [31:0] rmw_old_word;
+reg [31:0] rmw_new_word;
+reg [31:0] rmw_expdata;
+reg [31:0] rmw_layermask;
 
-// We need dedicated blitter read ports on the blit ROMs.
-// blit0/blit2 form the low half, blit1/blit3 form the high half.
-// addr[12] selects blit0 vs blit2 (or blit1 vs blit3).
-// BUT: gfxhalfsize = total_blit_size/2 = 0x2000, so src wraps at 13 bits.
-// Low half: address 0x0000-0x0FFF = blit0, 0x1000-0x1FFF = blit2
-// High half: address 0x0000-0x0FFF = blit1, 0x1000-0x1FFF = blit3
-
-// For now, build a combined blitter ROM read using a simple registered approach.
-// The blit ROMs are already instantiated as eprom_4k with port A = CPU, port B = download.
-// We need a THIRD read for the blitter.
-//
-// PRACTICAL SOLUTION: Use registered shadow copies loaded at download time,
-// OR add the blitter as a combinational read from the same eprom_4k instances
-// by time-multiplexing. Since blitter runs when CPU is NOT accessing blit ROMs
-// (blitter writes to VRAM, not reads from blit bank), we can safely share port A.
-//
-// Actually simpler: just declare blitter ROM as a separate 16KB block RAM loaded at download.
-
-reg [7:0] blitrom [0:16383];  // 16KB blitter ROM flat
-initial begin
-    integer bi;
-    for (bi = 0; bi < 16384; bi = bi + 1)
-        blitrom[bi] = 8'd0;
-end
-
-// Load blitter ROM from ioctl (index 2)
 always_ff @(posedge clk_10m) begin
-    if(ioctl_wr) begin
-        if(blit0_cs_i) blitrom[{2'b00, ioctl_addr[11:0]}] <= ioctl_data;
-        if(blit1_cs_i) blitrom[{2'b01, ioctl_addr[11:0]}] <= ioctl_data;
-        if(blit2_cs_i) blitrom[{2'b10, ioctl_addr[11:0]}] <= ioctl_data;
-        if(blit3_cs_i) blitrom[{2'b11, ioctl_addr[11:0]}] <= ioctl_data;
-    end
-end
-
-// Blitter execution state machine
-always_ff @(posedge clk_10m) begin
-    if(!reset) begin
-        blit_active <= 0;
-        blit_state <= BLIT_IDLE;
+    if (!reset) begin
+        vram_state <= ST_IDLE;
+        vram_we_a <= 0;
     end
     else begin
-        case(blit_state)
-            BLIT_IDLE: begin
-                // CPU VRAM writes allowed only when blitter is idle (matches real HW bus-stall)
-                if(cs_videoram & ~n_wr) begin
-                    vram_write_word(cpu_A[13:0], cpu_Dout, video_control[8][3:0]);
-                end
-                if(blitter_start) begin
-                    blit_src <= {video_control[1], video_control[0]};
-                    blit_dst <= {video_control[3], video_control[2]};
-                    blit_width <= video_control[4];
-                    blit_height <= video_control[5];
-                    blit_mask <= video_control[8];
-                    // Adjust mask per MAME: OR top/bottom 2 bits during DMA
-                    blit_x_cnt <= 0;
-                    blit_y_cnt <= 0;
+        vram_we_a <= 0;  // Default: no write
+
+        case (vram_state)
+            ST_IDLE: begin
+                if (blitter_start) begin
+                    // Latch blitter params
+                    blit_width   <= video_control[4];
+                    blit_height  <= video_control[5];
                     blit_cur_src <= {video_control[1], video_control[0]};
                     blit_cur_dst <= {video_control[3], video_control[2]};
-                    blit_active <= 1;
-                    blit_state <= BLIT_WRITE;
+                    blit_x_cnt  <= 0;
+                    blit_y_cnt  <= 0;
+                    // Compute adjusted mask
+                    blit_adj_mask <= video_control[8];
+                    vram_state <= ST_BLIT_SETUP;
+                end
+                else if (cs_videoram & ~n_wr) begin
+                    // CPU VRAM write — start RMW cycle
+                    cpu_wr_addr <= cpu_A[13:0];
+                    cpu_wr_data <= cpu_Dout;
+                    cpu_wr_mask <= video_control[8][3:0];
+                    vram_addr_a <= cpu_A[13:0];  // Present read address
+                    vram_state <= ST_CPU_RMW_RD;
                 end
             end
 
-            BLIT_WRITE: begin
-                // Compute effective addresses
-                // effdst = (dst + x) & 0x3FFF
-                // effsrc = src & (gfxhalfsize-1) = src & 0x1FFF
-                reg [13:0] effdst;
-                reg [12:0] effsrc;
-                reg [7:0] adj_mask;
-                effdst = (blit_cur_dst + {8'd0, blit_x_cnt}) & 14'h3FFF;
-                effsrc = blit_cur_src[12:0];
+            //--- CPU VRAM write (2-cycle RMW) ---
+            ST_CPU_RMW_RD: begin
+                // Read data available this cycle (registered output from dpram)
+                rmw_old_word <= {vram_hi_qa, vram_lo_qa};
+                rmw_expdata  <= expand_data(cpu_wr_data);
+                rmw_layermask <= build_layermask(cpu_wr_mask);
+                vram_state <= ST_CPU_RMW_WR;
+            end
 
-                adj_mask = blit_mask;
-                if (adj_mask[3:2] != 0) adj_mask[3:2] = 2'b11;
-                if (adj_mask[1:0] != 0) adj_mask[1:0] = 2'b11;
+            ST_CPU_RMW_WR: begin
+                rmw_new_word = (rmw_old_word & ~rmw_layermask) | (rmw_expdata & rmw_layermask);
+                vram_addr_a <= cpu_wr_addr;
+                vram_lo_da <= rmw_new_word[15:0];
+                vram_hi_da <= rmw_new_word[31:16];
+                vram_we_a  <= 1;
+                vram_state <= ST_IDLE;
+            end
 
-                // Write low half (mask & 0x05)
-                vram_write_word(effdst, blitrom[{1'b0, effsrc}], adj_mask[3:0] & 4'b0101);
-                // Write high half (mask & 0x0A)
-                vram_write_word(effdst, blitrom[{1'b1, effsrc}], adj_mask[3:0] & 4'b1010);
+            //--- Blitter DMA ---
+            ST_BLIT_SETUP: begin
+                // Adjust mask per MAME: OR top/bottom 2-bit pairs during DMA
+                if (blit_adj_mask[3:2] != 0) blit_adj_mask[3:2] <= 2'b11;
+                if (blit_adj_mask[1:0] != 0) blit_adj_mask[1:0] <= 2'b11;
+                // Start first pixel: read low-half ROM
+                blitrom_addr_a <= {1'b0, blit_cur_src[12:0]};
+                vram_state <= ST_BLIT_ROMRD;
+            end
 
+            ST_BLIT_ROMRD: begin
+                // Capture low-half ROM data, now read high-half
+                blit_rom_data_lo <= blitrom_qa;
+                blitrom_addr_a <= {1'b1, blit_cur_src[12:0]};
+                // Simultaneously present VRAM read address for RMW
+                vram_addr_a <= (blit_cur_dst[13:0] + {6'd0, blit_x_cnt}) & 14'h3FFF;
+                vram_state <= ST_BLIT_RMW_RD;
+            end
+
+            ST_BLIT_RMW_RD: begin
+                // Capture high-half ROM data
+                blit_rom_data_hi <= blitrom_qa;
+                // VRAM read data now available
+                rmw_old_word <= {vram_hi_qa, vram_lo_qa};
+                vram_state <= ST_BLIT_RMW_WR_LO;
+            end
+
+            ST_BLIT_RMW_WR_LO: begin
+                // Apply low-half blit (mask & 0x05)
+                rmw_expdata   = expand_data(blit_rom_data_lo);
+                rmw_layermask = build_layermask(blit_adj_mask[3:0] & 4'b0101);
+                rmw_new_word  = (rmw_old_word & ~rmw_layermask) | (rmw_expdata & rmw_layermask);
+                // Now apply high-half blit (mask & 0x0A) on top of that
+                rmw_expdata   = expand_data(blit_rom_data_hi);
+                rmw_layermask = build_layermask(blit_adj_mask[3:0] & 4'b1010);
+                rmw_new_word  = (rmw_new_word & ~rmw_layermask) | (rmw_expdata & rmw_layermask);
+                // Write back
+                vram_addr_a <= (blit_cur_dst[13:0] + {6'd0, blit_x_cnt}) & 14'h3FFF;
+                vram_lo_da  <= rmw_new_word[15:0];
+                vram_hi_da  <= rmw_new_word[31:16];
+                vram_we_a   <= 1;
+                vram_state  <= ST_BLIT_NEXT;
+            end
+
+            ST_BLIT_NEXT: begin
+                // Advance to next pixel
                 blit_cur_src <= blit_cur_src + 16'd1;
-
-                if(blit_x_cnt == blit_width) begin
+                if (blit_x_cnt == blit_width) begin
                     blit_x_cnt <= 0;
-                    if(blit_y_cnt == blit_height) begin
-                        blit_active <= 0;
-                        blit_state <= BLIT_IDLE;
+                    if (blit_y_cnt == blit_height) begin
+                        vram_state <= ST_IDLE;  // Done
                     end
                     else begin
-                        blit_y_cnt <= blit_y_cnt + 8'd1;
+                        blit_y_cnt  <= blit_y_cnt + 8'd1;
                         blit_cur_dst <= blit_cur_dst + 16'd256;
+                        // Start next row: read ROM for first pixel
+                        blitrom_addr_a <= {1'b0, (blit_cur_src + 16'd1) & 16'h1FFF};
+                        vram_state <= ST_BLIT_ROMRD;
                     end
                 end
                 else begin
                     blit_x_cnt <= blit_x_cnt + 8'd1;
+                    // Start next pixel: read ROM
+                    blitrom_addr_a <= {1'b0, (blit_cur_src + 16'd1) & 16'h1FFF};
+                    vram_state <= ST_BLIT_ROMRD;
                 end
             end
 
-            default: blit_state <= BLIT_IDLE;
+            default: vram_state <= ST_IDLE;
         endcase
     end
 end
@@ -587,26 +645,48 @@ wire [7:0] effya = scrolly + (scan_y ^ xora);
 wire [7:0] effxb = scan_x[7:0] ^ xorb;
 wire [7:0] effyb = scan_y ^ xorb;
 
-// VRAM read for plane A
-// Address = effya + 256 * (effxa / 4), byte select = effxa % 4
-wire [13:0] vram_addr_a = {effxa[7:2], effya};
-wire [31:0] vram_word_a = {vram_byte3[vram_addr_a], vram_byte2[vram_addr_a],
-                           vram_byte1[vram_addr_a], vram_byte0[vram_addr_a]};
-wire [7:0]  vram_slice_a = (effxa[1:0] == 2'd0) ? vram_word_a[7:0] :
-                           (effxa[1:0] == 2'd1) ? vram_word_a[15:8] :
-                           (effxa[1:0] == 2'd2) ? vram_word_a[23:16] :
-                                                   vram_word_a[31:24];
-wire [3:0] pixa_raw = vram_slice_a[3:0];  // Plane A = low nibble
+// VRAM scanout uses port B of the dpram_dc instances
+// Both planes A and B read from the same VRAM word — we alternate addresses per pixel clock
+// For simplicity: compute plane A address on even clocks, plane B on odd clocks,
+// OR just use plane A address (since both planes are in the same 32-bit word).
+//
+// Actually: both pixa and pixb come from the SAME vram word at different addresses.
+// Plane A uses scroll, Plane B does not. So they read different addresses.
+// We only have ONE port B. Solution: alternate each 10MHz cycle between A and B.
 
-// VRAM read for plane B
-wire [13:0] vram_addr_b = {effxb[7:2], effyb};
-wire [31:0] vram_word_b = {vram_byte3[vram_addr_b], vram_byte2[vram_addr_b],
-                           vram_byte1[vram_addr_b], vram_byte0[vram_addr_b]};
-wire [7:0]  vram_slice_b = (effxb[1:0] == 2'd0) ? vram_word_b[7:0] :
-                           (effxb[1:0] == 2'd1) ? vram_word_b[15:8] :
-                           (effxb[1:0] == 2'd2) ? vram_word_b[23:16] :
-                                                   vram_word_b[31:24];
-wire [3:0] pixb_raw = vram_slice_b[7:4];  // Plane B = high nibble
+reg [13:0] scan_addr_a, scan_addr_b;
+reg [31:0] scan_word_a, scan_word_b;
+reg        scan_phase = 0;
+
+always_comb begin
+    scan_addr_a = {effxa[7:2], effya};
+    scan_addr_b = {effxb[7:2], effyb};
+end
+
+// Alternate port B address between plane A and plane B each clock
+assign vram_addr_b = scan_phase ? scan_addr_b : scan_addr_a;
+
+always_ff @(posedge clk_10m) begin
+    scan_phase <= ~scan_phase;
+    if (!scan_phase)
+        scan_word_a <= {vram_hi_qb, vram_lo_qb};  // Latch plane A data
+    else
+        scan_word_b <= {vram_hi_qb, vram_lo_qb};  // Latch plane B data
+end
+
+// Extract pixel bytes from latched 32-bit words
+wire [7:0] vram_slice_a = (effxa[1:0] == 2'd0) ? scan_word_a[7:0] :
+                          (effxa[1:0] == 2'd1) ? scan_word_a[15:8] :
+                          (effxa[1:0] == 2'd2) ? scan_word_a[23:16] :
+                                                  scan_word_a[31:24];
+
+wire [7:0] vram_slice_b = (effxb[1:0] == 2'd0) ? scan_word_b[7:0] :
+                          (effxb[1:0] == 2'd1) ? scan_word_b[15:8] :
+                          (effxb[1:0] == 2'd2) ? scan_word_b[23:16] :
+                                                  scan_word_b[31:24];
+
+wire [3:0] pixa_raw = vram_slice_a[3:0];   // Plane A = low nibble
+wire [3:0] pixb_raw = vram_slice_b[7:4];   // Plane B = high nibble
 
 // Priority compositing (MAME logic)
 // Even pixels (first of pair): full brightness, no KOS1 masking
