@@ -620,8 +620,8 @@ end
 // MAME screen_update variables derived from video_control registers
 wire [7:0] scrolly = video_control[6];
 wire [7:0] scrollx = video_control[7];
-wire [2:0] maska = {video_control[10][5], video_control[10][3], 1'b0}; // (vc[10] & 0x28) >> 3
-wire [2:0] maskb = video_control[10][2:0];                              // (vc[10] & 0x07)
+wire [2:0] maska = (video_control[10] & 8'h28) >> 3;   // MAME exact
+wire [2:0] maskb =  video_control[10][2:0];
 wire [7:0] xora = video_control[9][5] ? 8'hFF : 8'h00;
 wire [7:0] xorb = video_control[9][4] ? 8'hFF : 8'h00;
 wire       enaa = video_control[9][3];
@@ -629,60 +629,53 @@ wire       enab = video_control[9][2];
 wire       pria = ~video_control[9][1];
 wire       prib = ~video_control[9][0];
 
-// Current scanout position (from video timing counters)
-// h_cnt runs 0-639 at 10MHz. Visible pixels are 0-511.
-// MAME iterates x in steps of 2 (x, x+1), so each MAME x maps to h_cnt/2.
-// For the FPGA, we compute pixel values on the fly during scanout.
+// Current scanout position (used for address)
+wire [8:0] scan_x = h_cnt[9:1];
+wire [7:0] scan_y = v_cnt[7:0];
 
-wire [8:0] scan_x = h_cnt[9:1];  // 0-319, but visible 0-255
-wire [7:0] scan_y = v_cnt[7:0];  // 0-259, visible 8-247
-
-// Plane A coordinates (with scroll and flip)
+// Plane A / B coordinates (combo for address generation)
 wire [7:0] effxa = scrollx + (scan_x[7:0] ^ xora);
 wire [7:0] effya = scrolly + (scan_y ^ xora);
-
-// Plane B coordinates (no scroll, just flip)
 wire [7:0] effxb = scan_x[7:0] ^ xorb;
 wire [7:0] effyb = scan_y ^ xorb;
-
-// VRAM scanout uses port B of the dpram_dc instances
-// Both planes A and B read from the same VRAM word — we alternate addresses per pixel clock
-// For simplicity: compute plane A address on even clocks, plane B on odd clocks,
-// OR just use plane A address (since both planes are in the same 32-bit word).
-//
-// Actually: both pixa and pixb come from the SAME vram word at different addresses.
-// Plane A uses scroll, Plane B does not. So they read different addresses.
-// We only have ONE port B. Solution: alternate each 10MHz cycle between A and B.
 
 reg [13:0] scan_addr_a, scan_addr_b;
 reg [31:0] scan_word_a, scan_word_b;
 reg        scan_phase = 0;
+
+// Delayed slice index (effx[1:0]) so it matches the latched VRAM word
+reg [1:0] slice_a_dly, slice_b_dly;
 
 always_comb begin
     scan_addr_a = {effxa[7:2], effya};
     scan_addr_b = {effxb[7:2], effyb};
 end
 
-// Alternate port B address between plane A and plane B each clock
 assign vram_addr_b = scan_phase ? scan_addr_b : scan_addr_a;
 
 always_ff @(posedge clk_10m) begin
     scan_phase <= ~scan_phase;
-    if (!scan_phase)
-        scan_word_a <= {vram_hi_qb, vram_lo_qb};  // Latch plane A data
+
+    // latch slice index every clock (this will be 1 clock behind the current effx)
+    slice_a_dly <= effxa[1:0];
+    slice_b_dly <= effxb[1:0];
+
+    // latch VRAM data (1-cycle latency)
+    if (scan_phase)      // just presented A → data now available for A
+        scan_word_a <= {vram_hi_qb, vram_lo_qb};
     else
-        scan_word_b <= {vram_hi_qb, vram_lo_qb};  // Latch plane B data
+        scan_word_b <= {vram_hi_qb, vram_lo_qb};
 end
 
 // Extract pixel bytes from latched 32-bit words
-wire [7:0] vram_slice_a = (effxa[1:0] == 2'd0) ? scan_word_a[7:0] :
-                          (effxa[1:0] == 2'd1) ? scan_word_a[15:8] :
-                          (effxa[1:0] == 2'd2) ? scan_word_a[23:16] :
+wire [7:0] vram_slice_a = (slice_a_dly == 2'd0) ? scan_word_a[7:0] :
+                          (slice_a_dly == 2'd1) ? scan_word_a[15:8] :
+                          (slice_a_dly == 2'd2) ? scan_word_a[23:16] :
                                                   scan_word_a[31:24];
 
-wire [7:0] vram_slice_b = (effxb[1:0] == 2'd0) ? scan_word_b[7:0] :
-                          (effxb[1:0] == 2'd1) ? scan_word_b[15:8] :
-                          (effxb[1:0] == 2'd2) ? scan_word_b[23:16] :
+wire [7:0] vram_slice_b = (slice_b_dly == 2'd0) ? scan_word_b[7:0] :
+                          (slice_b_dly == 2'd1) ? scan_word_b[15:8] :
+                          (slice_b_dly == 2'd2) ? scan_word_b[23:16] :
                                                   scan_word_b[31:24];
 
 wire [3:0] pixa_raw = vram_slice_a[3:0];   // Plane A = low nibble

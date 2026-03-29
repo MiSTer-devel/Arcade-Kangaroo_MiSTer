@@ -349,18 +349,18 @@ end
 //////////////////  Arcade Buttons/Interfaces   ///////////////////////////
 
 //Player 1
-wire m_up1      = btn_up        | joystick_0[3];
+wire m_up1      = btn_up        | joystick_0[3]  | joystick_0[4];
 wire m_down1    = btn_down      | joystick_0[2];
 wire m_left1    = btn_left      | joystick_0[1];
 wire m_right1   = btn_right     | joystick_0[0];
-wire m_punch_p1 = btn_fire      | joystick_0[4];
+wire m_punch_p1 = btn_fire      | joystick_0[5];
 
 //Player 2
-wire m_up2      = btn_up		| joystick_1[3];
+wire m_up2      = btn_up		| joystick_1[3]  | joystick_1[4];
 wire m_down2    = btn_down      | joystick_1[2];
 wire m_left2    = btn_left      | joystick_1[1];
 wire m_right2   = btn_right     | joystick_1[0];
-wire m_punch_p2 = btn_fire      | joystick_1[4];
+wire m_punch_p2 = btn_fire      | joystick_1[5];
 
 //Start/Coin
 wire m_start1   = btn_1p_start  | joystick_0[7];
@@ -370,7 +370,7 @@ wire m_coin2    = btn_coin2     | joystick_1[6];
 wire m_pause    = btn_pause     | joystick_0[9];
 
 //Service Mode
-wire m_service  = btn_service   | joystick_0[8];
+wire m_service  = btn_service                  ;
 wire m_service2 = btn_service2                 ;
 wire m_service3 = btn_service3                 ;
 wire m_service4 = btn_service4                 ;
