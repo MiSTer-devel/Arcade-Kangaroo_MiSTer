@@ -64,8 +64,10 @@
         <part crc="57766f69" name="tvg_82.12"/>
     </rom> -->
 
-    <rom index="3"></rom>
+    <!-- Index 3: Hiscore config (CFG_LENGTHWIDTH=3 format) -->
+    <rom index="3" md5="none"></rom>
     <rom index="4"></rom>
+
 
     <remark>Requires MCU integration (Step 7B) to boot properly</remark>
     <mratimestamp>20260329000000</mratimestamp>

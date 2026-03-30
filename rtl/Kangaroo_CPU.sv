@@ -582,13 +582,16 @@ always_ff @(posedge clk_10m) begin
             end
 
             ST_BLIT_RMW_WR_LO: begin
-                // Apply low-half blit (mask & 0x05)
+                // clear pixel first
+                rmw_expdata   = 32'h00000000;
+                rmw_layermask = build_layermask(blit_adj_mask[3:0]);
+                // Apply low-half blit (mask & 0x0A)
                 rmw_expdata   = expand_data(blit_rom_data_lo);
-                rmw_layermask = build_layermask(blit_adj_mask[3:0] & 4'b0101);
-                rmw_new_word  = (rmw_old_word & ~rmw_layermask) | (rmw_expdata & rmw_layermask);
-                // Now apply high-half blit (mask & 0x0A) on top of that
-                rmw_expdata   = expand_data(blit_rom_data_hi);
                 rmw_layermask = build_layermask(blit_adj_mask[3:0] & 4'b1010);
+                rmw_new_word  = (rmw_old_word & ~rmw_layermask) | (rmw_expdata & rmw_layermask);
+                // Now apply high-half blit (mask & 0x05) on top of that
+                rmw_expdata   = expand_data(blit_rom_data_hi);
+                rmw_layermask = build_layermask(blit_adj_mask[3:0] & 4'b0101);
                 rmw_new_word  = (rmw_new_word & ~rmw_layermask) | (rmw_expdata & rmw_layermask);
                 // Write back
                 vram_addr_a <= (blit_cur_dst[13:0] + {6'd0, blit_x_cnt}) & 14'h3FFF;

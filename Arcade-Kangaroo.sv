@@ -196,8 +196,8 @@ assign HDMI_BLACKOUT = 0;
 assign HDMI_BOB_DEINT = 0;
 
 wire signed [15:0] audio_l, audio_r;
-assign AUDIO_L = audio_l;
-assign AUDIO_R = audio_r;
+assign AUDIO_L = pause_cpu ? 16'd0 : audio_l;
+assign AUDIO_R = pause_cpu ? 16'd0 : audio_r;
 assign AUDIO_S = 1;   // signed
 assign AUDIO_MIX = 0; // no mix, true stereo
 
@@ -225,6 +225,9 @@ localparam CONF_STR = {
 	"P1,Pause Options;",
 	"P1OP,Pause when OSD is open,On,Off;",
 	"P1OQ,Dim video after 10s,On,Off;",
+	"-;",
+	"P2,High Score Options;",
+	"P2OR,Autosave Hiscores,Off,On;",
 	"-;",
 	"DIP;",
 	"-;",
@@ -315,9 +318,6 @@ reg btn_1p_start = 0;
 reg btn_2p_start = 0;
 reg btn_pause    = 0;
 reg btn_service  = 0;
-reg btn_service2 = 0;
-reg btn_service3 = 0;
-reg btn_service4 = 0;
 
 wire pressed = ~ps2_key[9];
 wire [7:0] code = ps2_key[7:0];
@@ -332,9 +332,6 @@ always @(posedge CLK_10M) begin
 			'h36: btn_coin2    <= pressed; // 6 = Coin Input 2
 			'h4D: btn_pause    <= pressed; // P = Pause
 			'h46: btn_service  <= pressed; // 9 = Test Advance
-			'h45: btn_service2 <= pressed; // 0 = Test Next Line
-			'h44: btn_service3 <= pressed; // O = Test Slew Up  
-			'h4B: btn_service4 <= pressed; // L = Test Slew Down
 
 			'h75: btn_up       <= pressed; // up         = Up
 			'h72: btn_down     <= pressed; // down       = Down
@@ -371,9 +368,6 @@ wire m_pause    = btn_pause     | joystick_0[9];
 
 //Service Mode
 wire m_service  = btn_service                  ;
-wire m_service2 = btn_service2                 ;
-wire m_service3 = btn_service3                 ;
-wire m_service4 = btn_service4                 ;
 
 // PAUSE SYSTEM
 wire pause_cpu;
@@ -383,7 +377,7 @@ pause #(8,8,8,10) pause
 	.*,
 	.clk_sys(CLK_10M),
 	.user_button(m_pause),
-	.pause_request(1'b0),
+	.pause_request(hs_pause),
 	.options(~status[26:25])
 );
 

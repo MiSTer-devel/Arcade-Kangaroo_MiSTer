@@ -58,7 +58,8 @@
         <part crc="9e6a599f" name="136008-111.ic53"/>
     </rom>
 
-    <rom index="3"></rom>
+    <!-- Index 3: Hiscore config (CFG_LENGTHWIDTH=3 format) -->
+    <rom index="3" md5="none"></rom>
     <rom index="4"></rom>
 
     <remark>Atari license variant — requires MCU integration</remark>
