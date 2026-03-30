@@ -76,12 +76,14 @@ T80s #(.Mode(0), .T2Write(1), .IOWait(1)) sound_cpu
 //------------------------------------------------------ Address Decoding ------------------------------------------------------//
 
 wire mem_access = ~n_mreq & n_rfsh;
+wire io_access  = ~n_iorq;
+wire any_access = mem_access | io_access;
 
-wire cs_sndrom  = mem_access & (snd_A[15:12] == 4'h0);              // 0x0000-0x0FFF
-wire cs_sndram  = mem_access & (snd_A[15:12] == 4'h4);              // 0x4000-0x4FFF
-wire cs_slatch  = mem_access & (snd_A[15:12] == 4'h6) & ~n_rd;     // 0x6000 read
-wire cs_ay_data = mem_access & (snd_A[15:12] == 4'h7) & ~n_wr;     // 0x7000 write
-wire cs_ay_addr = mem_access & (snd_A[15:12] == 4'h8) & ~n_wr;     // 0x8000 write
+wire cs_sndrom  = mem_access & (snd_A[15:12] == 4'h0);
+wire cs_sndram  = mem_access & (snd_A[15:12] == 4'h4);
+wire cs_slatch  = any_access & (snd_A[15:12] == 4'h6) & ~n_rd;
+wire cs_ay_data = any_access & (snd_A[15:12] == 4'h7) & ~n_wr;
+wire cs_ay_addr = any_access & (snd_A[15:12] == 4'h8) & ~n_wr;
 
 //--------------------------------------------------------- Data Mux -----------------------------------------------------------//
 
@@ -179,5 +181,12 @@ wire [9:0] ay_sum = {2'b00, ayA_raw} + {2'b00, ayB_raw} + {2'b00, ayC_raw};
 wire signed [15:0] ay_signed = {1'b0, ay_sum, 5'd0} - 16'sd12288;  // rough center + scale
 
 assign sound_out = ay_signed;
+
+// DEBUG: 1kHz test tone
+//reg [13:0] tone_cnt = 0;
+//always_ff @(posedge clk_10m) begin
+//    tone_cnt <= tone_cnt + 1;
+//end
+//wire signed [15:0] test_tone = tone_cnt[13] ? 16'sd4000 : -16'sd4000;
 
 endmodule
