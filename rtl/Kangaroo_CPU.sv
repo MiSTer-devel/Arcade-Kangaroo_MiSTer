@@ -722,8 +722,8 @@ end
 
 // Output — BGR 3-bit palette (MAME: PALETTE(config, m_palette, palette_device::BGR_3BIT))
 wire active_video = ~video_hblank & ~video_vblank;
-assign video_r = active_video ? {final_color[0], final_color[0], final_color[0]} : 3'd0;
+assign video_r = active_video ? {final_color[2], final_color[2], final_color[2]} : 3'd0;
 assign video_g = active_video ? {final_color[1], final_color[1], final_color[1]} : 3'd0;
-assign video_b = active_video ? {final_color[2], final_color[2]} : 2'd0;
+assign video_b = active_video ? {final_color[0], final_color[0]} : 2'd0;
 
 endmodule
