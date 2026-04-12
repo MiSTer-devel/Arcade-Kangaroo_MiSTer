@@ -260,19 +260,19 @@ assign sound_latch_wr = slatch_wr_pulse;
 
 // The bootleg has no MCU. It pulses NMI at reset to make the game boot.
 // MAME: m_maincpu->pulse_input_line(INPUT_LINE_NMI, attotime::zero);
-reg [3:0] nmi_boot_cnt = 4'd0;
+reg [7:0] nmi_boot_cnt = 8'd0;
 reg n_nmi = 1'b1;
 always_ff @(posedge clk_10m) begin
     if(!reset) begin
-        nmi_boot_cnt <= 4'd15;
+        nmi_boot_cnt <= 8'd255;
         n_nmi <= 1'b1;
     end
-    else if(nmi_boot_cnt > 0) begin
-        nmi_boot_cnt <= nmi_boot_cnt - 4'd1;
-        if(nmi_boot_cnt == 4'd8)
-            n_nmi <= 1'b0;  // Assert NMI
-        else if(nmi_boot_cnt == 4'd4)
-            n_nmi <= 1'b1;  // Release NMI
+    else if(nmi_boot_cnt > 0 && cen_2m5) begin
+        nmi_boot_cnt <= nmi_boot_cnt - 8'd1;
+        if(nmi_boot_cnt == 8'd32)
+            n_nmi <= 1'b0;
+        else if(nmi_boot_cnt == 8'd16)
+            n_nmi <= 1'b1;
     end
 end
 
