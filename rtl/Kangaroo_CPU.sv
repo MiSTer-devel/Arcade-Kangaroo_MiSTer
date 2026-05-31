@@ -470,6 +470,7 @@ localparam ST_BLIT_RMW_RD2   = 4'd7;
 localparam ST_BLIT_RMW_WR_HI = 4'd8;
 localparam ST_BLIT_NEXT   = 4'd9;
 localparam ST_CPU_RMW_RD2 = 4'd10;
+localparam ST_BLIT_ROWSTART = 4'd11;
 
 reg [3:0]  vram_state = ST_IDLE;
 reg [7:0]  blit_width;
@@ -586,6 +587,19 @@ always_ff @(posedge clk_10m) begin
                 rmw_expdata   = 32'h00000000;
                 rmw_layermask = build_layermask(blit_adj_mask[3:0]);
                 // Apply low-half blit (mask & 0x0A)
+                //
+                // NOTE 2026-05-16: this pairing is INVERTED from MAME's
+                // kangaroo.cpp:344-345 (MAME pairs LOW↔0x05, HIGH↔0x0a).
+                // We swapped to match MAME and the test showed: colors went
+                // way off across all graphics + sprite trails turned BLACK
+                // instead of green (clear started working but background
+                // restoration broke). Diagnosis: the mismatch here is being
+                // consumed by a COMPENSATING WRONGNESS elsewhere in the
+                // pipeline (compositing? palette LUT? plane extraction at
+                // scanout?), and the two wrongs make a right visually.
+                // Reverting until we can ground-truth against MAME and find
+                // the second mismatch. See
+                // Claude/sprite_artifacting_audit_2026-05-16.md.
                 rmw_expdata   = expand_data(blit_rom_data_lo);
                 rmw_layermask = build_layermask(blit_adj_mask[3:0] & 4'b1010);
                 rmw_new_word  = (rmw_old_word & ~rmw_layermask) | (rmw_expdata & rmw_layermask);
@@ -614,7 +628,7 @@ always_ff @(posedge clk_10m) begin
                         blit_cur_dst <= blit_cur_dst + 16'd256;
                         // Start next row: read ROM for first pixel
                         blitrom_addr_a <= {1'b0, (blit_cur_src + 16'd1) & 16'h1FFF};
-                        vram_state <= ST_BLIT_ROMRD;
+                        vram_state <= ST_BLIT_ROWSTART;
                     end
                 end
                 else begin
@@ -623,6 +637,11 @@ always_ff @(posedge clk_10m) begin
                     blitrom_addr_a <= {1'b0, (blit_cur_src + 16'd1) & 16'h1FFF};
                     vram_state <= ST_BLIT_ROMRD;
                 end
+            end
+
+            ST_BLIT_ROWSTART: begin
+                // blit_cur_dst is now settled — proceed to ROM read
+                vram_state <= ST_BLIT_ROMRD;
             end
 
             default: vram_state <= ST_IDLE;
