@@ -388,16 +388,27 @@ wire hs, vs;
 wire [7:0] r, g, b;
 wire ce_pix;
 
+// DIAG-2026-06-18: 2x pixel clock for "double the size then reduce". arcade_video now renders 512 px/line
+// (each of the 256 source columns doubled -> MAME-style dimmed-copy interleave); screen_rotate + the
+// scaler then shrink the 512-wide framebuffer back to the display ("reduce the resolution/size").
+// ce_pix MUST be a CLK_40M-domain pulse: the core's 5 MHz ce_pix lives in the 10 MHz domain and can't be
+// cleanly doubled there. Phase (==2) samples mid-period after the core's RGB settles; if pixels shimmer
+// or smear horizontally, try ==1 or ==3. To revert: arcade_video back to #(256,24) and drop .ce_pix below.
+reg [1:0] ce_pix_div = 2'd0;
+always @(posedge CLK_40M) ce_pix_div <= ce_pix_div + 1'd1;
+wire ce_pix_2x = (ce_pix_div == 2'd2);   // 10 MHz, 1-in-4 of CLK_40M
+
 wire rotate_ccw = 0;  // Kangaroo is ROT90 (CW)
 wire no_rotate = status[12] | direct_video;
 wire flip = status[11] | ~no_rotate;
 screen_rotate screen_rotate(.*);
 
-arcade_video #(256,24) arcade_video
+arcade_video #(512,24) arcade_video   // DIAG-2026-06-18: was #(256,24) — 512 px/line (256 cols doubled), scaler reduces
 (
 	.*,
 
 	.clk_video(CLK_40M),
+	.ce_pix(ce_pix_2x),   // DIAG-2026-06-18: 10 MHz (overrides the core's 5 MHz ce_pix that .* would pick)
 
 	.RGB_in(rgb_out),
 	.HBlank(hblank),

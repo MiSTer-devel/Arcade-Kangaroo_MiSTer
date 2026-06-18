@@ -667,7 +667,11 @@ wire       prib = ~video_control[9][0];
 wire [8:0] scan_x = h_cnt[9:1];
 wire [7:0] scan_y = v_cnt[7:0];
 
-// Plane A / B coordinates (combo for address generation)
+// 2026-06-18: scanout left at NATIVE (full content + correct size). HW results that rule out the simple
+// knobs: doubling (src_col=h_cnt[9:2]) => top-half magnified; doubling + halved extent (hblank 256) =>
+// only 1/4 of screen. So the doubling<->display-extent relationship here is NOT understood — needs a full
+// pixel-path trace (h_cnt/v_cnt -> ce_pix -> arcade_video -> screen_rotate -> FB) before any more scanout
+// edits. is_odd=h_cnt[1] interleave + pixb_raw priority kept (interleave present, just not MAME-clean).
 wire [7:0] effxa = scrollx + (scan_x[7:0] ^ xora);
 wire [7:0] effya = scrolly + (scan_y ^ xora);
 wire [7:0] effxb = scan_x[7:0] ^ xorb;
@@ -725,6 +729,10 @@ wire [3:0] pixb_raw = vram_slice_b[7:4];   // Plane B = high nibble
 // Priority compositing (MAME logic)
 // Even pixels (first of pair): full brightness, no KOS1 masking
 // Odd pixels (second of pair): apply KOS1 color mask for Z=0 pixels
+// DIAG-2026-06-18: at the NEW 10MHz pixel sampling (arcade_video ce_pix_2x), arcade_video samples the
+// core's RGB once per h_cnt, so consecutive display pixels share scan_x (= the doubling) and h_cnt[0]
+// is the doubled-pixel parity → full / dimmed-copy alternation = MAME interleave. (Was h_cnt[1], the
+// parity for the old 5MHz/256px path.) Source stays native scan_x = full 256-column content.
 wire is_odd_pixel = h_cnt[0];
 
 wire [3:0] pixa_masked = (is_odd_pixel && !(pixa_raw[3])) ? (pixa_raw & {1'b0, maska}) : pixa_raw;
@@ -736,9 +744,11 @@ wire [3:0] pixb_final = is_odd_pixel ? pixb_masked : pixb_raw;
 reg [2:0] final_color;
 always_comb begin
     final_color = 3'd0;
-    if (enaa && (pria || pixb_final == 0))
+    // DIAG-REVERT-2026-06-17: plane-A test was (pria || pixb_final == 0); MAME tests the ORIGINAL
+    // (unmasked) pixb here — it masks pixb only inside the plane-B block, after this test. was: pixb_final
+    if (enaa && (pria || pixb_raw == 0))
         final_color = final_color | pixa_final[2:0];
-    if (enab && (prib || pixa_final == 0))
+    if (enab && (prib || pixa_final == 0))   // pixa_final = raw(even)/masked(odd), matches MAME order
         final_color = final_color | pixb_final[2:0];
 end
 
