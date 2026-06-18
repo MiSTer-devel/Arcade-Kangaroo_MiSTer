@@ -381,6 +381,25 @@ dpram_dc #(.widthad_a(14), .width_a(16)) vram_hi
     .q_b(vram_hi_qb)
 );
 
+// DIAG-2026-06-18 PLANE-OFFSET FIX (the 2-month sprite-edge fringe). The scanout previously read plane A
+// and plane B through ONE shared port B (muxed on h_cnt[0]); with the 1-cycle DPRAM latency that left
+// plane A one COLUMN ahead of plane B at compositing → garbage at sprite EDGES (interiors fine). These two
+// MIRROR instances (written identically on port A) give plane B its own same-latency read port, so plane A
+// reads vram_lo/hi:B and plane B reads vram_lo2/hi2:B — aligned (recreates step4's combinational dual-read).
+wire [15:0] vram2_lo_qb, vram2_hi_qb;   // plane-B mirror scanout read data
+wire [13:0] vram_addr_b2;               // plane B scanout address (mirror port B)
+
+dpram_dc #(.widthad_a(14), .width_a(16)) vram_lo2
+(
+    .clock_a(clk_10m), .address_a(vram_addr_a), .data_a(vram_lo_da), .wren_a(vram_we_a), .q_a(),
+    .clock_b(clk_10m), .address_b(vram_addr_b2), .data_b(16'd0), .wren_b(1'b0), .q_b(vram2_lo_qb)
+);
+dpram_dc #(.widthad_a(14), .width_a(16)) vram_hi2
+(
+    .clock_a(clk_10m), .address_a(vram_addr_a), .data_a(vram_hi_da), .wren_a(vram_we_a), .q_a(),
+    .clock_b(clk_10m), .address_b(vram_addr_b2), .data_b(16'd0), .wren_b(1'b0), .q_b(vram2_hi_qb)
+);
+
 //------------------------------------------------ VRAM Expand/Mask Functions --------------------------------------------------//
 
 // MAME videoram_write expand logic — pure combinational functions
@@ -677,12 +696,12 @@ wire [7:0] effya = scrolly + (scan_y ^ xora);
 wire [7:0] effxb = scan_x[7:0] ^ xorb;
 wire [7:0] effyb = scan_y ^ xorb;
 
-// Scanout pipeline — locked to pixel clock (h_cnt[0])
-// h_cnt[0]=0: present plane A address → dpram latches internally
-// h_cnt[0]=1: plane A data valid, present plane B address
-// Next h_cnt[0]=0: plane B data valid, latch both, present next plane A address
-//
-// This gives us both plane A and B data valid at each pixel boundary.
+// Scanout pipeline — DIAG-2026-06-18 PLANE-OFFSET FIX. Read BOTH planes EVERY cycle on their own
+// same-latency ports (plane A = vram_lo/hi:B, plane B = vram_lo2/hi2:B) instead of alternating ONE
+// shared port on h_cnt[0]. The old alternating read left plane A one COLUMN ahead of plane B at the
+// compositing point → garbage-colored sprite EDGES (the 2-month fringe / "green poop"). Now both planes
+// are ALIGNED to the same column. Slices are delayed one cycle to match the 1-cycle DPRAM read latency,
+// identically for both planes. (Image may shift ~1px horizontally vs before — cosmetic; adjust hblank if so.)
 
 reg [31:0] scan_word_a, scan_word_b;
 reg [1:0]  scan_effxa_slice, scan_effxb_slice;
@@ -690,26 +709,21 @@ reg [1:0]  scan_effxa_slice, scan_effxb_slice;
 wire [13:0] scan_addr_a_w = {effxa[7:2], effya};
 wire [13:0] scan_addr_b_w = {effxb[7:2], effyb};
 
-// Mux port B address: plane A on even h_cnt, plane B on odd h_cnt
-assign vram_addr_b = h_cnt[0] ? scan_addr_b_w : scan_addr_a_w;
+assign vram_addr_b  = scan_addr_a_w;   // plane A read port (vram_lo/hi:B)
+assign vram_addr_b2 = scan_addr_b_w;   // plane B read port (vram_lo2/hi2:B)
 
 reg [1:0] effxa_slice_hold, effxb_slice_hold;
 
 always_ff @(posedge clk_10m) begin
-    if (!h_cnt[0]) begin
-        // Even clock: present plane A address, capture its slice index for next cycle
-        effxa_slice_hold <= effxa[1:0];
-        // Also latch plane B data (valid from address presented on previous odd clock)
-        scan_word_b <= {vram_hi_qb, vram_lo_qb};
-        scan_effxb_slice <= effxb_slice_hold;
-    end
-    else begin
-        // Odd clock: present plane B address, capture its slice index for next cycle
-        effxb_slice_hold <= effxb[1:0];
-        // Also latch plane A data (valid from address presented on previous even clock)
-        scan_word_a <= {vram_hi_qb, vram_lo_qb};
-        scan_effxa_slice <= effxa_slice_hold;
-    end
+    // capture this cycle's slice indices (for the addresses presented this cycle)
+    effxa_slice_hold <= effxa[1:0];
+    effxb_slice_hold <= effxb[1:0];
+    // latch both planes together: q_b holds data for the address presented LAST cycle (1-cycle DPRAM
+    // latency), and the matching last-cycle slice → plane A and plane B aligned to the SAME column.
+    scan_word_a      <= {vram_hi_qb,  vram_lo_qb};
+    scan_word_b      <= {vram2_hi_qb, vram2_lo_qb};
+    scan_effxa_slice <= effxa_slice_hold;
+    scan_effxb_slice <= effxb_slice_hold;
 end
 
 // Extract pixel bytes from latched 32-bit words
@@ -735,6 +749,9 @@ wire [3:0] pixb_raw = vram_slice_b[7:4];   // Plane B = high nibble
 // parity for the old 5MHz/256px path.) Source stays native scan_x = full 256-column content.
 wire is_odd_pixel = h_cnt[0];
 
+// (2026-06-18: plane-hold "bleed fix" REVERTED — had zero effect on HW, so the bleed is NOT plane-A/B
+//  misalignment. Back to the straight KOS1 masking. Bleed cause now suspected = the scaler interpolating
+//  the fine interleave pattern in the horizontally-stretched THIN framebuffer → fix is the WIDTH/aspect.)
 wire [3:0] pixa_masked = (is_odd_pixel && !(pixa_raw[3])) ? (pixa_raw & {1'b0, maska}) : pixa_raw;
 wire [3:0] pixb_masked = (is_odd_pixel && !(pixb_raw[3])) ? (pixb_raw & {1'b0, maskb}) : pixb_raw;
 
@@ -744,11 +761,9 @@ wire [3:0] pixb_final = is_odd_pixel ? pixb_masked : pixb_raw;
 reg [2:0] final_color;
 always_comb begin
     final_color = 3'd0;
-    // DIAG-REVERT-2026-06-17: plane-A test was (pria || pixb_final == 0); MAME tests the ORIGINAL
-    // (unmasked) pixb here — it masks pixb only inside the plane-B block, after this test. was: pixb_final
     if (enaa && (pria || pixb_raw == 0))
         final_color = final_color | pixa_final[2:0];
-    if (enab && (prib || pixa_final == 0))   // pixa_final = raw(even)/masked(odd), matches MAME order
+    if (enab && (prib || pixa_final == 0))
         final_color = final_color | pixb_final[2:0];
 end
 
