@@ -490,6 +490,11 @@ localparam ST_BLIT_RMW_WR_HI = 4'd8;
 localparam ST_BLIT_NEXT   = 4'd9;
 localparam ST_CPU_RMW_RD2 = 4'd10;
 localparam ST_BLIT_ROWSTART = 4'd11;
+// DPRAM-LATENCY-FIX-2026-06-21: blitrom_mem is dpram_dc (altsyncram) = 2 clks addr-reg+read (the CPU RMW in
+// this file correctly waits 2). The blit ROM reads waited only 1 → LOW/HIGH captured a cycle early off the
+// shared port → 1-source-pixel skew between planes = the green/blue 1px fringe. These settle states fix it.
+localparam ST_BLIT_WAIT_LO  = 4'd12;
+localparam ST_BLIT_WAIT_HI  = 4'd13;
 
 reg [3:0]  vram_state = ST_IDLE;
 reg [7:0]  blit_width;
@@ -574,29 +579,44 @@ always_ff @(posedge clk_10m) begin
                 // Adjust mask per MAME: OR top/bottom 2-bit pairs during DMA
                 if (blit_adj_mask[3:2] != 0) blit_adj_mask[3:2] <= 2'b11;
                 if (blit_adj_mask[1:0] != 0) blit_adj_mask[1:0] <= 2'b11;
-                // Start first pixel: read low-half ROM
+                // Start first pixel: present low-half ROM addr
                 blitrom_addr_a <= {1'b0, blit_cur_src[12:0]};
+                // DPRAM-LATENCY-FIX-2026-06-21: was "vram_state <= ST_BLIT_ROMRD;" (1-cycle settle — TOO EARLY).
+                vram_state <= ST_BLIT_WAIT_LO;
+            end
+
+            // DPRAM-LATENCY-FIX-2026-06-21: NEW settle state — LOW-half ROM needs 2 clks (addr-reg + read), like
+            // the CPU RMW. Without it blit_rom_data_lo was captured a cycle early off the shared blitrom port,
+            // landing the LOW plane 1 source-pixel off from HIGH = the green/blue 1px fringe.
+            ST_BLIT_WAIT_LO: begin
                 vram_state <= ST_BLIT_ROMRD;
             end
 
             ST_BLIT_ROMRD: begin
-                // Capture low-half ROM data, now read high-half
+                // DPRAM-LATENCY-FIX-2026-06-21: LOW-half ROM data now valid (2 clks after present). Capture it,
+                // then present HIGH-half addr + the VRAM read addr (both captured 2 clks later in ST_BLIT_RMW_RD).
                 blit_rom_data_lo <= blitrom_qa;
                 blitrom_addr_a <= {1'b1, blit_cur_src[12:0]};
-                // Simultaneously present VRAM read address for RMW
                 vram_addr_a <= (blit_cur_dst[13:0] + {6'd0, blit_x_cnt}) & 14'h3FFF;
+                // DPRAM-LATENCY-FIX-2026-06-21: was "vram_state <= ST_BLIT_RMW_RD;" (1-cycle — TOO EARLY).
+                vram_state <= ST_BLIT_WAIT_HI;
+            end
+
+            // DPRAM-LATENCY-FIX-2026-06-21: NEW settle state — HIGH-half ROM + VRAM reads need 2 clks.
+            ST_BLIT_WAIT_HI: begin
                 vram_state <= ST_BLIT_RMW_RD;
             end
 
             ST_BLIT_RMW_RD: begin
-                // Capture high-half ROM data (blitrom has 1-cycle latency, presented last cycle)
+                // DPRAM-LATENCY-FIX-2026-06-21: HIGH-half ROM AND VRAM read-back both valid now (2 clks after
+                // presented in ST_BLIT_ROMRD). Both match the SAME source pixel as LOW → planes aligned.
                 blit_rom_data_hi <= blitrom_qa;
-                // VRAM address was presented last cycle — output valid NEXT cycle
-                vram_state <= ST_BLIT_RMW_RD2;
+                rmw_old_word     <= {vram_hi_qa, vram_lo_qa};
+                vram_state <= ST_BLIT_RMW_WR_LO;
             end
 
+            // DPRAM-LATENCY-FIX-2026-06-21: ST_BLIT_RMW_RD2 no longer reached (VRAM capture merged above). Kept.
             ST_BLIT_RMW_RD2: begin
-                // NOW VRAM output is valid — latch it
                 rmw_old_word <= {vram_hi_qa, vram_lo_qa};
                 vram_state <= ST_BLIT_RMW_WR_LO;
             end
@@ -620,11 +640,18 @@ always_ff @(posedge clk_10m) begin
                 // the second mismatch. See
                 // Claude/sprite_artifacting_audit_2026-05-16.md.
                 rmw_expdata   = expand_data(blit_rom_data_lo);
-                rmw_layermask = build_layermask(blit_adj_mask[3:0] & 4'b1010);
+                // PAIRING-MAME-MATCH-2026-06-21: with the DPRAM timing skew fixed, match MAME kangaroo.cpp:344
+                // (LOW-half ROM <-> mask & 0x05). The inverted pairing only looked right because the skew was
+                // compensating; now it's exposed. Original (inverted) line below:
+                // rmw_layermask = build_layermask(blit_adj_mask[3:0] & 4'b1010);
+                rmw_layermask = build_layermask(blit_adj_mask[3:0] & 4'b0101);
                 rmw_new_word  = (rmw_old_word & ~rmw_layermask) | (rmw_expdata & rmw_layermask);
                 // Now apply high-half blit (mask & 0x05) on top of that
                 rmw_expdata   = expand_data(blit_rom_data_hi);
-                rmw_layermask = build_layermask(blit_adj_mask[3:0] & 4'b0101);
+                // PAIRING-MAME-MATCH-2026-06-21: HIGH-half ROM <-> mask & 0x0a per MAME kangaroo.cpp:345.
+                // Original (inverted) line below:
+                // rmw_layermask = build_layermask(blit_adj_mask[3:0] & 4'b0101);
+                rmw_layermask = build_layermask(blit_adj_mask[3:0] & 4'b1010);
                 rmw_new_word  = (rmw_new_word & ~rmw_layermask) | (rmw_expdata & rmw_layermask);
                 // Write back
                 vram_addr_a <= (blit_cur_dst[13:0] + {6'd0, blit_x_cnt}) & 14'h3FFF;
@@ -652,9 +679,10 @@ always_ff @(posedge clk_10m) begin
                 end
                 else begin
                     blit_x_cnt <= blit_x_cnt + 8'd1;
-                    // Start next pixel: read ROM
+                    // Start next pixel: present LOW-half ROM addr
                     blitrom_addr_a <= {1'b0, (blit_cur_src + 16'd1) & 16'h1FFF};
-                    vram_state <= ST_BLIT_ROMRD;
+                    // DPRAM-LATENCY-FIX-2026-06-21: was "vram_state <= ST_BLIT_ROMRD;" (1-cycle — TOO EARLY).
+                    vram_state <= ST_BLIT_WAIT_LO;
                 end
             end
 
