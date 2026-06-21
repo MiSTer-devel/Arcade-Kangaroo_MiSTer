@@ -50,8 +50,8 @@ Default MiSTer gamepad mapping:
 | Input | Action |
 |-------|--------|
 | D-Pad / Joystick | Move |
-| A | Bubbles |
-| B | Tongue |
+| A | Tongue |
+| B | Bubbles |
 | Select | Insert Coin |
 | Start | 1 Player Start |
 | Right Shoulder | 2 Player Start |
