@@ -332,9 +332,27 @@ end
 
 // Sync and blank generation
 // MAME visible: x = 0*2 to 256*2-1 = 0 to 511, y = 8 to 247
-assign video_hblank = (h_cnt >= 10'd512);
+// TOP-BOTTOM-FIX-2026-06-21: the scanout pixel pipeline is 2 clk_10m cycles deep (combinational addr ->
+// DPRAM addr-reg -> scan_word latch), so the pixel for h_cnt=H is output at H+2. hblank/hsync were
+// combinational off h_cnt, so the active window LED the data by 2 px -> 2 rows of pre-visible garbage at the
+// display TOP and the last 2 real rows pushed off the BOTTOM (h_cnt = display-vertical, ROT90). Delay
+// hblank/hsync by 2 cycles to align the window with the data. This is a latency match, NOT a directional
+// window shift (which wraps junk). v-axis has no such latency -> vblank/vsync stay combinational, and the
+// vblank IRQ keeps using the undelayed video_vblank (game timing untouched).
+// Original combinational lines below:
+// assign video_hblank = (h_cnt >= 10'd512);
+// assign video_hsync  = (h_cnt >= 10'd560) & (h_cnt < 10'd624);  // ~64 clocks
+wire video_hblank_raw = (h_cnt >= 10'd512);
+wire video_hsync_raw  = (h_cnt >= 10'd560) & (h_cnt < 10'd624);  // ~64 clocks
+reg [1:0] hblank_sr = 2'b11;
+reg [1:0] hsync_sr  = 2'b00;
+always_ff @(posedge clk_10m) begin
+    hblank_sr <= {hblank_sr[0], video_hblank_raw};
+    hsync_sr  <= {hsync_sr[0],  video_hsync_raw};
+end
+assign video_hblank = hblank_sr[1];
+assign video_hsync  = hsync_sr[1];
 assign video_vblank = (v_cnt < 9'd8) | (v_cnt >= 9'd248);
-assign video_hsync  = (h_cnt >= 10'd560) & (h_cnt < 10'd624);  // ~64 clocks
 assign video_vsync  = (v_cnt >= 9'd252) & (v_cnt < 9'd256);     // ~4 lines
 
 //--------------------------------------------------------- Video RAM ----------------------------------------------------------//

@@ -24,8 +24,8 @@
     <players>2 (alternating)</players>
     <joystick>4-way</joystick>
     <special_controls></special_controls>
-    <num_buttons>1</num_buttons>
-    <button_names>Punch</button_names>
+    <num_buttons>2</num_buttons>
+    <buttons names="Punch,Jump,Coin,Start 1P,Start 2P,Pause" default="A,B,Select,Start,R,L"/>
 
     <switches default="00">
         <dip bits="0"     name="Lives" ids="5,3"/>

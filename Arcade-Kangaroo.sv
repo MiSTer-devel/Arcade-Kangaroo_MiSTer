@@ -232,7 +232,7 @@ localparam CONF_STR = {
 	"DIP;",
 	"-;",
 	"R0,Reset;",
-	"J1,Punch,Jump,Coin,Start 1P,Start 2P,Pause;",
+	"J1,Button1,Button2,Coin,Start 1P,Start 2P,Pause;",
 	"jn,A,B,Select,Start,R,L;",
 	"V,v",`BUILD_DATE
 };
