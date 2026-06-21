@@ -27,12 +27,13 @@
     <num_buttons>1</num_buttons>
     <buttons names="Jump,Punch,Coin,Start 1P,Start 2P,Pause" default="A,B,Select,Start,R,L"/>
 
+    <!-- DIP-FIX-2026-06-21: aligned to MAME kangaroo DSW0 (bits 2-3 = Bonus Life; Lives/Difficulty order;
+         Coinage = MAME dual A/B). Cabinet/Music/Flip live in IN0, not DSW0. -->
     <switches default="00">
-        <dip bits="0"     name="Lives" ids="5,3"/>
-        <dip bits="1"     name="Difficulty" ids="Hard,Easy"/>
-        <dip bits="2"     name="Demo Sounds" ids="Off,On"/>
-        <dip bits="3"     name="Cabinet" ids="Cocktail,Upright"/>
-        <dip bits="4,7"   name="Coinage" ids="1C/1Cr,1C/2Cr,1C/3Cr,1C/4Cr,1C/5Cr,1C/6Cr,2C/1Cr,3C/1Cr,Free Play,1C/1Cr,1C/1Cr,1C/1Cr,1C/1Cr,1C/1Cr,1C/1Cr,1C/1Cr"/>
+        <dip bits="0"     name="Lives" ids="3,5"/>
+        <dip bits="1"     name="Difficulty" ids="Easy,Hard"/>
+        <dip bits="2,3"   name="Bonus Life" ids="None,10000,10000 30000,20000 40000"/>
+        <dip bits="4,7"   name="Coinage" ids="A 1C/1C B 1C/1C,A 2C/1C B 2C/1C,A 2C/1C B 1C/3C,A 1C/1C B 1C/2C,A 1C/1C B 1C/3C,A 1C/1C B 1C/4C,A 1C/1C B 1C/5C,A 1C/1C B 1C/6C,A 1C/2C B 1C/2C,A 1C/2C B 1C/4C,A 1C/2C B 1C/5C,A 1C/2C B 1C/10C,A 1C/2C B 1C/11C,A 1C/2C B 1C/12C,A 1C/2C B 1C/6C,Free Play"/>
     </switches>
 
     <!-- Index 0: Main CPU ROMs (24KB) -->
@@ -66,7 +67,7 @@
 		</part>
 	</rom>
 	<rom index="4"></rom>
-	<nvram index="4" size="60"></nvram>
+	<nvram index="4" size="66"></nvram>
 
 	<!-- Index 5: game-select mod byte. 00 = Kangaroo (01 = Funky Fish). Keeps core_mod=0 even on FF->Kangaroo hot-switch. -->
 	<rom index="5"><part>00</part></rom>

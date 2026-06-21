@@ -22,7 +22,7 @@ module Kangaroo_CPU
     input   [4:0] in0,              // IN0: service, start1, start2, coin_l, coin_r
     // GAMESEL-2026-06-21: in1 widened 5->8 (bit5/0x20 = Funky Fish 2nd button). Original: input [4:0] in1,
     input   [7:0] in1,              // IN1: P1 right,left,up,down,punch + bit5 = FF 2nd btn (0x20)
-    input   [4:0] in2,              // IN2: P2 right, left, up, down, punch
+    input   [7:0] in2,              // IN2: P2 right, left, up, down, punch
 
     // Sound interface
     output  [7:0] sound_latch,      // Data to sound CPU
@@ -138,7 +138,7 @@ wire [7:0] cpu_Din =
     cs_in0         ? {3'b000, in0} :
     // GAMESEL-2026-06-21: pass all 8 IN1 bits (was {3'b000, in1}, which forced bits 5-7 to 0 → 2nd button dead).
     cs_in1         ? in1 :
-    cs_in2         ? {3'b000, in2} :
+    cs_in2         ? in2 :
     cs_mcu         ? 8'h00 :       // Bootleg: MCU reads return 0
     8'hFF;
 

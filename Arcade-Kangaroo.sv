@@ -203,9 +203,7 @@ assign AUDIO_MIX = 0; // no mix, true stereo
 
 assign LED_DISK  = 0;
 assign LED_POWER = 0;
-//assign LED_USER  = ioctl_download;
-// GAMESEL-DIAG-2026-06-21: LED_USER temporarily shows is_funkyfish (driven in the game-select block below).
-// Restore after verifying the game-select byte downloads. Original: assign LED_USER = ioctl_download;
+assign LED_USER  = ioctl_download;
 assign BUTTONS = 0;
 
 ///////////////////////////////////////////////////
@@ -363,10 +361,6 @@ always @(posedge CLK_10M)
 		core_mod <= ioctl_dout;
 wire is_funkyfish = (core_mod == 8'd1);
 
-// GAMESEL-DIAG-2026-06-21: LED_USER = is_funkyfish — ON = Funky Fish (index-5 byte read), OFF = Kangaroo.
-// Proves the game-select byte actually downloads. Revert LED_USER to ioctl_download (line ~207) after verifying.
-assign LED_USER = is_funkyfish;
-
 //////////////////  Arcade Buttons/Interfaces   ///////////////////////////
 
 //Player 1
@@ -378,8 +372,6 @@ wire m_down1    = btn_down      | joystick_0[2];
 wire m_left1    = btn_left      | joystick_0[1];
 wire m_right1   = btn_right     | joystick_0[0];
 wire m_punch_p1 = btn_fire      | joystick_0[5];
-// GAMESEL-2026-06-21: Funky Fish 2nd button -> IN1 bit 0x20. joystick_0[4] (Button1/"Bubbles") + kbd left-shift.
-wire ff_btn2_p1 = is_funkyfish & (joystick_0[4] | btn_fire2);
 
 //Player 2
 wire m_up2      = btn_up		| joystick_1[3]  | (is_funkyfish ? 1'b0 : joystick_1[4]);
@@ -387,8 +379,6 @@ wire m_down2    = btn_down      | joystick_1[2];
 wire m_left2    = btn_left      | joystick_1[1];
 wire m_right2   = btn_right     | joystick_1[0];
 wire m_punch_p2 = btn_fire      | joystick_1[5];
-wire ff_btn2_p1 = is_funkyfish & (joystick_1[4] | btn_fire2);
-
 
 //Start/Coin
 wire m_start1   = btn_1p_start  | joystick_0[7];
@@ -451,7 +441,15 @@ arcade_video #(512,24) arcade_video   // DIAG-2026-06-18: was #(256,24) — 512 
 );
 
 // DIP switch
-wire [7:0] sw0 = status[7:0];  // Will be refined when DIP mapping is finalized
+// DIP-FIX-2026-06-21: DIPs arrive from the OSD via ioctl index 254 (standard MiSTer DIP download), NOT status.
+// Was `sw0 = status[7:0]` — a placeholder that never received the OSD DIP edits → "always 3 lives". Mirrors
+// Kyugo (Arcade-Kyugo.sv:487). The MRA <switches default=..> is downloaded here; sw0 = DSW0 (read at 0xe400).
+reg [7:0] dip_sw[8] = '{8'h00,8'h00,8'h00,8'h00,8'h00,8'h00,8'h00,8'h00};
+always @(posedge CLK_10M) begin
+	if (ioctl_wr && (ioctl_index == 8'd254) && !ioctl_addr[24:3])
+		dip_sw[ioctl_addr[2:0]] <= ioctl_dout;
+end
+wire [7:0] sw0 = dip_sw[0];
 
 //Instantiate Kangaroo top-level game module
 Kangaroo kangaroo_inst
@@ -465,9 +463,9 @@ Kangaroo kangaroo_inst
 	// IN1: {punch, down, up, left, right} P1 active-high
 	// GAMESEL-2026-06-21: in1 widened 5->8; bit5 (0x20) = Funky Fish 2nd button (ff_btn2_p1).
 	// Original: .in1({m_punch_p1, m_down1, m_up1, m_left1, m_right1}),
-	.in1({2'b00, ff_btn2_p1, m_punch_p1, m_down1, m_up1, m_left1, m_right1}),
+	.in1({3'b00, m_punch_p1, m_down1, m_up1, m_left1, m_right1}),
 	// IN2: {punch, down, up, left, right} P2 active-high
-	.in2({m_punch_p2, m_down2, m_up2, m_left2, m_right2}),
+	.in2({3'b00, m_punch_p2, m_down2, m_up2, m_left2, m_right2}),
 	.dsw0(sw0),
 
 	.video_hsync(hs),
@@ -490,14 +488,44 @@ Kangaroo kangaroo_inst
 
 	.pause(pause_cpu),
 
-	.hs_address(16'd0),
-	.hs_data_in(8'd0),
-	.hs_data_out(),
-	.hs_write(1'b0)
+	// HISCORE-2026-06-21: wired to the hiscore module (was stubbed to 0).
+	.hs_address(hs_address),
+	.hs_data_in(hs_data_in),
+	.hs_data_out(hs_data_out),
+	.hs_write(hs_write_enable)
 );
 
-// Hiscore disabled for now
-assign ioctl_din = 8'd0;
-assign ioctl_upload_req = 0;
+// HISCORE SYSTEM (HISCORE-2026-06-21) — mirrors Tutankham (Kangaroo's structural base), same hiscore.v v0014.
+// ioctl_din / ioctl_upload_req are now DRIVEN by the hiscore module (the old "disabled" assigns are removed).
+// Score access uses the work-RAM port B in Kangaroo_CPU.sv:208 (clk_10m). Config = MRA index 3, dump = index 4.
+wire [15:0] hs_address;
+wire [7:0]  hs_data_in;
+wire [7:0]  hs_data_out;
+wire        hs_write_enable;
+wire        hs_access_read;
+wire        hs_access_write;
+wire        hs_pause;
+wire        hs_configured;
+
+hiscore #(
+	.HS_ADDRESSWIDTH(16),
+	.CFG_ADDRESSWIDTH(3),
+	.CFG_LENGTHWIDTH(2)
+) hi (
+	.*,
+	.clk(CLK_10M),
+	.paused(pause_cpu),
+	.autosave(status[27]),
+	.ram_address(hs_address),
+	.data_from_ram(hs_data_out),
+	.data_to_ram(hs_data_in),
+	.data_from_hps(ioctl_dout),
+	.data_to_hps(ioctl_din),
+	.ram_write(hs_write_enable),
+	.ram_intent_read(hs_access_read),
+	.ram_intent_write(hs_access_write),
+	.pause_cpu(hs_pause),
+	.configured(hs_configured)
+);
 
 endmodule

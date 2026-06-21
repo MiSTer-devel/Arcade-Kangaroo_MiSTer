@@ -25,15 +25,17 @@
     <joystick>4-way</joystick>
     <special_controls></special_controls>
     <num_buttons>2</num_buttons>
-    <buttons names="Bubbles,Tongue,Coin,Start 1P,Start 2P,Pause" default="A,B,Select,Start,R,L"/>
+    <buttons names="Not Used,Bubbles / Tongue,Coin,Start 1P,Start 2P,Pause" default="A,B,Select,Start,R,L"/>
 
     <switches default="00">
-        <dip bits="0,1"   name="Coinage A" ids="2C/1Cr,1C/1Cr,1C/2Cr,1C/3Cr"/>
-        <dip bits="2,3"   name="Coinage B" ids="2C/1Cr,1C/1Cr,1C/2Cr,Free Play"/>
-        <dip bits="4"     name="Lives" ids="3,5"/>
-        <dip bits="5"     name="Cabinet" ids="Cocktail,Upright"/>
-        <dip bits="6"     name="Difficulty" ids="Hard,Easy"/>
-        <dip bits="7"     name="Demo Sounds" ids="Off,On"/>
+        <dip bits="0"     name="Lives" ids="3,5"/>
+        <dip bits="1"     name="Cabinet" ids="Cocktail,Upright"/>
+        <dip bits="2"     name="Flip Screen" ids="Off,On"/>
+        <dip bits="3"     name="Unknown" ids="On, Off"/>
+        <dip bits="4"     name="Unknown" ids="On, Off"/>
+        <dip bits="5"     name="Unknown" ids="On, Off"/>
+        <dip bits="6"     name="Unknown" ids="On, Off"/>
+        <dip bits="7"     name="Unknown" ids="On, Off"/>
     </switches>
 
     <!-- Index 0: Main CPU ROMs (16KB — only 4 ROMs vs Kangaroo's 6) -->
