@@ -1,5 +1,6 @@
 <p align="center">
   <img src="Useful Information/Kangaroo.png" width="800">
+  <img src="Useful Information/FunkyFish.png" width="800">
 </p>
 
 <h1 align="center">Kangaroo FPGA Core</h1>
@@ -34,11 +35,23 @@ This core targets MiSTer FPGA and aims for accurate gameplay behavior, video tim
 
 Default MiSTer gamepad mapping:
 
+| Kangaroo |
 | Input | Action |
 |-------|--------|
 | D-Pad / Joystick | Move |
 | A | Jump |
 | B | Punch |
+| Select | Insert Coin |
+| Start | 1 Player Start |
+| Right Shoulder | 2 Player Start |
+| Left Shoulder | Pause |
+
+| Funky Fish |
+| Input | Action |
+|-------|--------|
+| D-Pad / Joystick | Move |
+| A | Bubbles |
+| B | Tongue |
 | Select | Insert Coin |
 | Start | 1 Player Start |
 | Right Shoulder | 2 Player Start |

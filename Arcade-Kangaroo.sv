@@ -204,7 +204,8 @@ assign AUDIO_MIX = 0; // no mix, true stereo
 assign LED_DISK  = 0;
 assign LED_POWER = 0;
 //assign LED_USER  = ioctl_download;
-assign LED_USER  = ioctl_download;
+// GAMESEL-DIAG-2026-06-21: LED_USER temporarily shows is_funkyfish (driven in the game-select block below).
+// Restore after verifying the game-select byte downloads. Original: assign LED_USER = ioctl_download;
 assign BUTTONS = 0;
 
 ///////////////////////////////////////////////////
@@ -343,21 +344,51 @@ always @(posedge CLK_10M) begin
 	end
 end
 
+//////////////////  Game select (mod byte, MRA <rom index="5">)  ///////////////////////////
+// GAMESEL-2026-06-21: MRA `<rom index="5"><part>01</part></rom>` => Funky Fish; absent => Kangaroo (mod=0).
+// Cleared at each download start so Kangaroo MRAs (no index-5 byte) read mod=0 with NO MRA edits.
+// (index 1 = sound ROM, index 4 = NVRAM — both taken; 5 is free.)
+reg  [7:0] core_mod = 8'd0;
+// GAMESEL-FIX-2026-06-21: dropped the download-start reset — it cleared core_mod when the index-4 NVRAM load
+// (a separate ioctl_download transaction) re-raised ioctl_download AFTER the mod byte was captured. Now mirrors
+// the proven Kyugo pattern (Arcade-Kyugo.sv:494 — simple capture, no reset). Original below:
+// reg ioctl_download_d = 1'b0;
+// always @(posedge CLK_10M) begin
+//     ioctl_download_d <= ioctl_download;
+//     if (ioctl_download & ~ioctl_download_d)    core_mod <= 8'd0;       // download start
+//     else if (ioctl_wr & (ioctl_index == 8'd5)) core_mod <= ioctl_dout;
+// end
+always @(posedge CLK_10M)
+	if (ioctl_wr & (ioctl_index == 8'd5))
+		core_mod <= ioctl_dout;
+wire is_funkyfish = (core_mod == 8'd1);
+
+// GAMESEL-DIAG-2026-06-21: LED_USER = is_funkyfish — ON = Funky Fish (index-5 byte read), OFF = Kangaroo.
+// Proves the game-select byte actually downloads. Revert LED_USER to ioctl_download (line ~207) after verifying.
+assign LED_USER = is_funkyfish;
+
 //////////////////  Arcade Buttons/Interfaces   ///////////////////////////
 
 //Player 1
-wire m_up1      = btn_up        | joystick_0[3]  | joystick_0[4];
+// GAMESEL-2026-06-21: joystick_0[4] (Button1 / "Bubbles") is the KANGAROO jump-assist hack — for Funky Fish
+// it becomes the 2nd game button (IN1 bit 0x20) instead, so drop it from UP there.
+// Original: wire m_up1 = btn_up | joystick_0[3] | joystick_0[4];
+wire m_up1      = btn_up        | joystick_0[3]  | (is_funkyfish ? 1'b0 : joystick_0[4]);
 wire m_down1    = btn_down      | joystick_0[2];
 wire m_left1    = btn_left      | joystick_0[1];
 wire m_right1   = btn_right     | joystick_0[0];
 wire m_punch_p1 = btn_fire      | joystick_0[5];
+// GAMESEL-2026-06-21: Funky Fish 2nd button -> IN1 bit 0x20. joystick_0[4] (Button1/"Bubbles") + kbd left-shift.
+wire ff_btn2_p1 = is_funkyfish & (joystick_0[4] | btn_fire2);
 
 //Player 2
-wire m_up2      = btn_up		| joystick_1[3]  | joystick_1[4];
+wire m_up2      = btn_up		| joystick_1[3]  | (is_funkyfish ? 1'b0 : joystick_1[4]);
 wire m_down2    = btn_down      | joystick_1[2];
 wire m_left2    = btn_left      | joystick_1[1];
 wire m_right2   = btn_right     | joystick_1[0];
 wire m_punch_p2 = btn_fire      | joystick_1[5];
+wire ff_btn2_p1 = is_funkyfish & (joystick_1[4] | btn_fire2);
+
 
 //Start/Coin
 wire m_start1   = btn_1p_start  | joystick_0[7];
@@ -432,7 +463,9 @@ Kangaroo kangaroo_inst
 	// IN0: {coin_r, coin_l, start2, start1, service} active-high
 	.in0({m_coin2, m_coin1, m_start2, m_start1, m_service}),
 	// IN1: {punch, down, up, left, right} P1 active-high
-	.in1({m_punch_p1, m_down1, m_up1, m_left1, m_right1}),
+	// GAMESEL-2026-06-21: in1 widened 5->8; bit5 (0x20) = Funky Fish 2nd button (ff_btn2_p1).
+	// Original: .in1({m_punch_p1, m_down1, m_up1, m_left1, m_right1}),
+	.in1({2'b00, ff_btn2_p1, m_punch_p1, m_down1, m_up1, m_left1, m_right1}),
 	// IN2: {punch, down, up, left, right} P2 active-high
 	.in2({m_punch_p2, m_down2, m_up2, m_left2, m_right2}),
 	.dsw0(sw0),

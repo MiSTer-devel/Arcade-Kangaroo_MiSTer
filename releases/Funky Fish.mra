@@ -42,7 +42,7 @@
         <part crc="71959e6b" name="tvg_65.1"/>
         <part crc="5ccf68d4" name="tvg_66.2"/>
         <part crc="938ff36f" name="tvg_67.3"/>
-        <part repeat="0x2000" name="0xFF"/>
+	<part repeat="0x2000">FF</part>
     </rom>
 
     <!-- Index 1: Sound CPU ROM (4KB) -->
@@ -58,9 +58,17 @@
         <part crc="6ae9b584" name="tvg_72.v3"/>
     </rom>
 
-    <!-- Index 3: Hiscore config -->
-    <rom index="3" md5="none"></rom>
-    <rom index="4"></rom>
+	<rom index="3" md5="none">
+		<part>
+		00 00 FF FF 00 FF 00 02 00 02 00 01 11 11 00 00
+		00 00 E0 30 00 09 00 00
+		</part>
+	</rom>
+	<rom index="4"></rom>
+	<nvram index="4" size="9"></nvram>
+
+    <!-- Index 5: game-select mod byte. 01 = Funky Fish. Kangaroo MRAs omit this → core reads mod=0. -->
+    <rom index="5"><part>01</part></rom>
 
     <remark>Same hardware as Kangaroo bootleg — no MCU</remark>
     <mratimestamp>20260412000000</mratimestamp>

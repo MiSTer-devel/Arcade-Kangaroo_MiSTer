@@ -13,7 +13,8 @@ module Kangaroo
 
     // Player inputs (active HIGH, per MAME port definitions)
     input          [4:0] in0,              // {coin_r, coin_l, start2, start1, service}
-    input          [4:0] in1,              // {punch, down, up, left, right} P1
+    // GAMESEL-2026-06-21: in1 widened 5->8 (bit5/0x20 = Funky Fish 2nd button). Original: input [4:0] in1,
+    input          [7:0] in1,              // {2'b0, ff_btn2(0x20), punch, down, up, left, right} P1
     input          [4:0] in2,              // {punch, down, up, left, right} P2
     input          [7:0] dsw0,             // 8-bit DIP switch
 
