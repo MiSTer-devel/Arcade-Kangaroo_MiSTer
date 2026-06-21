@@ -19,11 +19,11 @@ This core targets MiSTer FPGA and aims for accurate gameplay behavior, video tim
 
 ---
 
-## Game Information
+## Core Information
 
 | Field        | Value |
 |--------------|--------|
-| Title        | Kangaroo |
+| Core Name    | Kangaroo |
 | Year         | 1982 |
 | Developer    | Sun Electronics |
 | Genre        | Platform |
