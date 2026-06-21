@@ -50,8 +50,8 @@ Default MiSTer gamepad mapping:
 | Input | Action |
 |-------|--------|
 | D-Pad / Joystick | Move |
-| A | Tongue |
-| B | Bubbles |
+| A | Not Used |
+| B | Bubbles / Tongue |
 | Select | Insert Coin |
 | Start | 1 Player Start |
 | Right Shoulder | 2 Player Start |
@@ -63,7 +63,7 @@ Default MiSTer gamepad mapping:
 
 - Arcade-accurate CPU timing
 - Sprite priority and layer handling
-- High score saving support
+- High score saving support - Loading is still broken (Working on it)
 - MiSTer-compatible .mra provided
 - Verified ROM definitions with checksums
 
