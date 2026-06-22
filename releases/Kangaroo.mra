@@ -60,11 +60,12 @@
         <part crc="9e6a599f" name="tvg_86.v3"/>
     </rom>
 
-    <!-- Index 3: MCU ROMs (will be used when MCU is integrated) -->
-    <!-- <rom index="3" md5="none" zip="kangaroo.zip">
+    <!-- Index 6: MB8841 MCU internal ROM (0x800) + protection PROM (0x800).
+         Loaded into the core and split on address bit11: 0x000-0x7FF = MCU prog, 0x800-0xFFF = protrom. -->
+    <rom index="6" md5="none" zip="kangaroo.zip">
         <part crc="04ca58ee" name="mb8841_477m.ic29"/>
         <part crc="57766f69" name="tvg_82.12"/>
-    </rom> -->
+    </rom>
 
 	<rom index="3" md5="none">
 		<part>
@@ -76,8 +77,8 @@
 	<rom index="4"></rom>
 	<nvram index="4" size="66"></nvram>
 
-	<!-- Index 5: game-select mod byte. 00 = Kangaroo (01 = Funky Fish). Keeps core_mod=0 even on FF->Kangaroo hot-switch. -->
-	<rom index="5"><part>00</part></rom>
+	<!-- Index 5: game-select mod byte. bit0 = Funky Fish, bit1 = MB8841 MCU fitted. 0x02 = Kangaroo + MCU. -->
+	<rom index="5"><part>02</part></rom>
 
     <remark>Kangaroo (Sun Electronics)</remark>
     <mratimestamp>20260329000000</mratimestamp>

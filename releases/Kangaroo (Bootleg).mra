@@ -69,7 +69,7 @@
 	<rom index="4"></rom>
 	<nvram index="4" size="66"></nvram>
 
-	<!-- Index 5: game-select mod byte. 00 = Kangaroo (01 = Funky Fish). Keeps core_mod=0 even on FF->Kangaroo hot-switch. -->
+	<!-- Index 5: game-select mod byte. bit0 = Funky Fish, bit1 = MB8841 MCU fitted. 0x00 = bootleg (no MCU). -->
 	<rom index="5"><part>00</part></rom>
 
     <remark>Bootleg variant (No MCU Protection)</remark>

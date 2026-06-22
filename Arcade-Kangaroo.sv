@@ -360,6 +360,9 @@ always @(posedge CLK_10M)
 	if (ioctl_wr & (ioctl_index == 8'd5))
 		core_mod <= ioctl_dout;
 wire is_funkyfish = (core_mod == 8'd1);
+// MCU-2026-06-22: index-5 bit1 = MB8841 fitted (original kangaroo/kangarooa MRAs set 0x02). Bootleg & Funky
+// Fish leave it clear -> mcu_present=0 -> boot-pulse NMI path (unchanged). is_funkyfish stays an == 0x01 test.
+wire mcu_present = core_mod[1];
 
 //////////////////  Arcade Buttons/Interfaces   ///////////////////////////
 
@@ -467,6 +470,8 @@ Kangaroo kangaroo_inst
 	// IN2: {punch, down, up, left, right} P2 active-high
 	.in2({3'b00, m_punch_p2, m_down2, m_up2, m_left2, m_right2}),
 	.dsw0(sw0),
+
+	.mcu_present(mcu_present),
 
 	.video_hsync(hs),
 	.video_vsync(vs),

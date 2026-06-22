@@ -36,6 +36,9 @@ module Kangaroo
 
     input                pause,
 
+    // MB8841 MCU present (original Kangaroo HW). From MRA index-5 game-select byte bit1.
+    input                mcu_present,
+
     // Hiscore (stubbed)
     input         [15:0] hs_address,
     input          [7:0] hs_data_in,
@@ -58,6 +61,9 @@ selector main_sel
 // Sound ROM (index 1) — single 4KB, no selector needed
 wire sndrom_cs = (ioctl_index == 8'd1);
 wire idx1_wr = ioctl_wr & sndrom_cs;
+
+// MCU ROMs (index 6: MB8841 prog 0x000-0x7FF + protection PROM 0x800-0xFFF)
+wire idx6_wr = ioctl_wr & (ioctl_index == 8'd6);
 
 // Blitter ROMs (index 2)
 wire blit0_cs, blit1_cs, blit2_cs, blit3_cs;
@@ -113,6 +119,9 @@ Kangaroo_CPU cpu_board
     .ioctl_addr(ioctl_addr),
     .ioctl_data(ioctl_data),
     .ioctl_wr(ioctl_wr),
+
+    .mcu_present(mcu_present),
+    .mcurom_wr(idx6_wr),
 
     .pause(pause),
 

@@ -420,7 +420,11 @@ begin
 			if single_byte_op = '1' then
 				if interrupt_pending = '1' or timer_interrupt_pending = '1' then
 					stack(to_integer(unsigned(r_si)))(13 downto 0) <= (r_cf & r_zf & r_stf & r_pa & r_pc);
-					r_pc <= "000010";
+-- MCU-IRQVEC-FIX-2026-06-22: MAME mb88xx.cpp:462-470 vectors EXTERNAL irq->0x02 but TIMER irq->0x04.
+						-- darfpga sent BOTH to 0x02 -> Kangaroo's timer/ape ISR (at 0x04) never ran -> the MCU
+						-- "clock" at 0xEF00 never advanced -> main CPU wedged at the first timer-dependent event
+						-- (screen-1 ape / final ladder). Found by MAME validation. Original: r_pc <= "000010";
+						if interrupt_pending = '1' then r_pc <= "000010"; else r_pc <= "000100"; end if;
 					r_pa <= "00000";
 					r_si <= r_si + "01";
 					if interrupt_pending = '1' then

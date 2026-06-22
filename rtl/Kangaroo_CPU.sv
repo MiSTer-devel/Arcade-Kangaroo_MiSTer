@@ -37,6 +37,10 @@ module Kangaroo_CPU
     input   [7:0] ioctl_data,
     input         ioctl_wr,
 
+    // MCU (MB8841) — index 6 ROM download + presence flag (original Kangaroo HW only)
+    input         mcu_present,    // 1 = MB8841 fitted (kangaroo/kangarooa); 0 = bootleg / Funky Fish
+    input         mcurom_wr,      // ioctl_wr for index 6 (prog 0x000-0x7FF + protrom 0x800-0xFFF)
+
     input         pause,
 
     // Hiscore interface (active high, stubbed for now)
@@ -121,7 +125,7 @@ wire cs_in1 = mem_access & (cpu_A[15:8] == 8'hED);
 // IN2 read: 0xEE00
 wire cs_in2 = mem_access & (cpu_A[15:8] == 8'hEE);
 
-// MCU: 0xEF00 (stubbed for bootleg — no MCU)
+// MCU: 0xEF00 (security chip; MB8841 on original HW, returns 0 on bootleg)
 wire cs_mcu = mem_access & (cpu_A[15:8] == 8'hEF);
 
 //--------------------------------------------------------- CPU Data Mux -------------------------------------------------------//
@@ -129,6 +133,7 @@ wire cs_mcu = mem_access & (cpu_A[15:8] == 8'hEF);
 wire [7:0] rom_D;
 wire [7:0] blitbank_D;
 wire [7:0] workram_D;
+wire [7:0] mcu_dout;            // 0xEF00 read data (MCU R0 latch, or 0 on bootleg)
 
 wire [7:0] cpu_Din =
     cs_any_rom     ? rom_D :
@@ -139,7 +144,7 @@ wire [7:0] cpu_Din =
     // GAMESEL-2026-06-21: pass all 8 IN1 bits (was {3'b000, in1}, which forced bits 5-7 to 0 → 2nd button dead).
     cs_in1         ? in1 :
     cs_in2         ? in2 :
-    cs_mcu         ? 8'h00 :       // Bootleg: MCU reads return 0
+    cs_mcu         ? mcu_dout :    // MB8841 R0 (original HW) or 0x00 (bootleg)
     8'hFF;
 
 //-------------------------------------------------------- Program ROMs --------------------------------------------------------//
@@ -262,21 +267,106 @@ assign sound_latch_wr = slatch_wr_pulse;
 
 // The bootleg has no MCU. It pulses NMI at reset to make the game boot.
 // MAME: m_maincpu->pulse_input_line(INPUT_LINE_NMI, attotime::zero);
+// On original HW (mcu_present) the MB8841 drives NMI instead (see MCU block below) — this pulse is unused.
 reg [7:0] nmi_boot_cnt = 8'd0;
-reg n_nmi = 1'b1;
+reg n_nmi_boot = 1'b1;
 always_ff @(posedge clk_10m) begin
     if(!reset) begin
         nmi_boot_cnt <= 8'd255;
-        n_nmi <= 1'b1;
+        n_nmi_boot <= 1'b1;
     end
     else if(nmi_boot_cnt > 0 && cen_2m5) begin
         nmi_boot_cnt <= nmi_boot_cnt - 8'd1;
         if(nmi_boot_cnt == 8'd32)
-            n_nmi <= 1'b0;
+            n_nmi_boot <= 1'b0;
         else if(nmi_boot_cnt == 8'd16)
-            n_nmi <= 1'b1;
+            n_nmi_boot <= 1'b1;
     end
 end
+
+// NMI source select: MB8841 (R3.3) on original HW, bootleg boot pulse otherwise. (mcu_nmi_n: MCU block below.)
+wire n_nmi = mcu_present ? mcu_nmi_n : n_nmi_boot;
+
+//-------------------------------------------------------- MB8841 MCU ---------------------------------------------------------//
+// Original Kangaroo (TVG-1-CPU-B, IC29) fits an MB8841 microcomputer used for protection. Per MAME
+// kangaroo.cpp:153 — besides the boot NMI it "acts like a timer to determine the intervals of the big ape
+// enemy appearing." Wiring mirrors kangaroo_mcu_state (kangaroo.cpp:455-504):
+//   CPU wr 0xEF00 -> main_data                                            (mcu_w)
+//   CPU rd 0xEF00 <- R0 port latch                                        (mcu_r)
+//   K port = 0xF & (R2.0 ? main_data : F) & (~R3.0 ? protrom[addr] : F)   (mcu_port_k_r)
+//   O port (oh:ol) -> protrom addr A0-A7 ; R3.1 -> A8 (A9,A10=GND)        (mcu_port_o_w / mcu_port_r_w)
+//   R3.3 -> main-CPU NMI                                                  (mcu_port_r_w)
+// MCU clock = 10MHz/4 = 2.5MHz (MAME MB8841(.., 10_MHz_XTAL/4)). Held in reset when not fitted.
+// darfpga mb88 has separate R in/out ports and no external drive on kangaroo's R pins, so tie in<-out
+// (MAME's read_r returns the output latch). Nothing drives the MCU /IRQ or /TC externally on kangaroo.
+
+reg  [4:0] mcu_tp = 5'd0;          // timer prescaler approximation (MAME TIMER_PRESCALE=32)
+always_ff @(posedge clk_10m) if (cen_2m5 & ~pause) mcu_tp <= mcu_tp + 5'd1;
+wire mcu_ena       = cen_2m5 & ~pause;
+wire mcu_ena_timer = mcu_ena & (mcu_tp == 5'd0);
+wire mcu_reset_n   = reset & mcu_present;     // hold in reset unless MB8841 is fitted
+
+wire [10:0] mcu_rom_addr;
+wire  [7:0] mcu_rom_q;
+wire  [3:0] mcu_ol, mcu_oh;
+wire  [7:0] mcu_o = {mcu_oh, mcu_ol};         // combined O port = protrom A0-A7
+wire  [3:0] r0_out, r1_out, r2_out, r3_out;
+
+reg  [7:0] main_data = 8'd0;                  // CPU write to 0xEF00 (mcu_w)
+always_ff @(posedge clk_10m)
+    if (cs_mcu & ~n_wr) main_data <= cpu_Dout;
+
+wire [10:0] protrom_addr = {2'b00, r3_out[1], mcu_o};   // A8 = R3.1, A0-A7 = O
+wire  [7:0] protrom_q;
+
+wire  [3:0] mcu_k = 4'hF
+                  & ( r2_out[0] ? main_data[3:0] : 4'hF)   // gated by R2.0
+                  & (~r3_out[0] ? protrom_q[3:0] : 4'hF);  // gated by ~R3.0
+
+wire mcu_nmi_n = ~r3_out[3];                  // R3.3 asserts NMI (active high) -> n_nmi low
+assign mcu_dout = mcu_present ? {4'h0, r0_out} : 8'h00;
+
+mb88 mcu
+(
+    .clock      (clk_10m),
+    .ena        (mcu_ena),
+    .ena_timer  (mcu_ena_timer),
+    .reset_n    (mcu_reset_n),
+
+    .r0_port_in (r0_out), .r1_port_in (r1_out), .r2_port_in (r2_out), .r3_port_in (r3_out),
+    .r0_port_out(r0_out), .r1_port_out(r1_out), .r2_port_out(r2_out), .r3_port_out(r3_out),
+    .k_port_in  (mcu_k),
+    .ol_port_out(mcu_ol), .oh_port_out(mcu_oh),
+    .p_port_out (),
+
+    .stby_n     (1'b1),
+    .tc_n       (1'b1),
+    .irq_n      (1'b1),
+    .sc_in_n    (1'b1),
+    .si_n       (1'b1),
+    .sc_out_n   (),
+    .so_n       (),
+    .to_n       (),
+
+    .rom_addr   (mcu_rom_addr),
+    .rom_data   (mcu_rom_q)
+);
+
+// MCU internal program ROM (2KB) — index 6, ioctl_addr[11]==0
+dpram_dc #(.widthad_a(11), .width_a(8)) mcu_prog
+(
+    .clock_a(clk_10m), .address_a(mcu_rom_addr), .data_a(8'd0), .wren_a(1'b0), .q_a(mcu_rom_q),
+    .clock_b(clk_10m), .address_b(ioctl_addr[10:0]), .data_b(ioctl_data),
+    .wren_b(mcurom_wr & ~ioctl_addr[11]), .q_b()
+);
+
+// MCU protection PROM (2KB) — index 6, ioctl_addr[11]==1
+dpram_dc #(.widthad_a(11), .width_a(8)) mcu_prot
+(
+    .clock_a(clk_10m), .address_a(protrom_addr), .data_a(8'd0), .wren_a(1'b0), .q_a(protrom_q),
+    .clock_b(clk_10m), .address_b(ioctl_addr[10:0]), .data_b(ioctl_data),
+    .wren_b(mcurom_wr & ioctl_addr[11]), .q_b()
+);
 
 //-------------------------------------------------------- VBlank IRQ ----------------------------------------------------------//
 
