@@ -442,22 +442,15 @@ begin
 				r_pc <= r_pc + "000001";
 			end if;
 
+			-- FIX-2026-07-02: interrupt acceptance moved to AFTER the instruction dispatch below (was
+			-- previously gating it: whenever an interrupt was pending, the just-fetched instruction was
+			-- silently discarded and never executed at all). MAME's model (mb88xx.cpp burn_cycles) always
+			-- finishes dispatching the fetched opcode via its switch statement, then separately redirects
+			-- PC for the NEXT fetch if an interrupt is pending -- it never discards an already-fetched
+			-- instruction. This happens roughly once per timer overflow (hundreds to thousands of times
+			-- over the 16-46s window the ape timer needs), so losing one instruction per acceptance
+			-- compounds into real, cumulative control-flow divergence from MAME over a long run.
 			if single_byte_op = '1' then
-				if (interrupt_pending = '1' or timer_interrupt_pending = '1') and r_in_irq = '0' then r_in_irq <= '1';  -- MCU-INIRQ-FIX-2026-06-22: gate + set nested-IRQ guard (MAME m_in_irq)
-					stack(to_integer(unsigned(r_si)))(13 downto 0) <= (r_cf & r_zf & r_stf & r_pa & r_pc);
--- MCU-IRQVEC-FIX-2026-06-22: MAME mb88xx.cpp:462-470 vectors EXTERNAL irq->0x02 but TIMER irq->0x04.
-						-- darfpga sent BOTH to 0x02 -> Kangaroo's timer/ape ISR (at 0x04) never ran -> the MCU
-						-- "clock" at 0xEF00 never advanced -> main CPU wedged at the first timer-dependent event
-						-- (screen-1 ape / final ladder). Found by MAME validation. Original: r_pc <= "000010";
-						if interrupt_pending = '1' then r_pc <= "000010"; else r_pc <= "000100"; end if;
-					r_pa <= "00000";
-					r_si <= r_si + "01";
-					if interrupt_pending = '1' then
-						interrupt_pending <= '0';
-					elsif timer_interrupt_pending = '1' then
-						timer_interrupt_pending <= '0';
-					end if;
-				else -- no irq
 			  case rom_data is
 					when X"00"  => r_stf <='1';                                         -- nop
 					when X"01"  => r_stf <='1';                                         -- outO    portO <- A //!PLA todo
@@ -594,7 +587,23 @@ begin
 					when others  => r_stf <='1';                                           -- jmp addr if ST  (op_code C0..FF)
 						 if r_stf = '1' then r_pc <= rom_data(5 downto 0); end if; -- (let r_pa be incremented when r_pc = 0x3F)
 				end case;
-				end if ;
+
+				-- Interrupt acceptance: happens ALONGSIDE the dispatch above, not instead of it (see the
+				-- FIX-2026-07-02 note above). If accepted, this overrides r_pc/r_pa for the NEXT fetch --
+				-- matches MAME servicing interrupts strictly between complete instructions, never mid-fetch.
+				if (interrupt_pending = '1' or timer_interrupt_pending = '1') and r_in_irq = '0' then
+					r_in_irq <= '1';  -- MCU-INIRQ-FIX-2026-06-22: nested-IRQ guard (MAME m_in_irq)
+					stack(to_integer(unsigned(r_si)))(13 downto 0) <= (r_cf & r_zf & r_stf & r_pa & r_pc);
+					-- MCU-IRQVEC-FIX-2026-06-22: MAME mb88xx.cpp:462-470 vectors EXTERNAL irq->0x02, TIMER irq->0x04.
+					if interrupt_pending = '1' then r_pc <= "000010"; else r_pc <= "000100"; end if;
+					r_pa <= "00000";
+					r_si <= r_si + "01";
+					if interrupt_pending = '1' then
+						interrupt_pending <= '0';
+					elsif timer_interrupt_pending = '1' then
+						timer_interrupt_pending <= '0';
+					end if;
+				end if;
 			else -- 2 bytes op_code, rom_data = 2nd byte
 			  case op_code is
 					when X"3D"  => r_stf <='1'; r_pa  <= rom_data(4 downto 0); r_pc <= r_a & "00";  -- jpa  PA <- data&0x1f; PC <- A*4
