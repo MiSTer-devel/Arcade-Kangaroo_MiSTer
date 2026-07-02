@@ -85,6 +85,9 @@ architecture struct of mb88 is
  signal r_zf  : std_logic := '0';
  signal r_cf  : std_logic := '0';
  signal r_vf  : std_logic := '0';
+ signal tmr_ovf : std_logic;  -- MCU-TIMERVF-FIX-2026-06-22: high the cycle the timer overflows (protects r_vf vs a coincident tstv clear)
+ signal tmr_presc : std_logic_vector(5 downto 0) := (others=>'0');  -- MCU-PRESC-FIX-2026-06-22: instruction-based timer prescaler (MAME m_TP)
+ signal tmr_itick : std_logic;  -- MCU-PRESC-FIX-2026-06-22: timer tick = every 32 INSTRUCTIONS (not clocks)
  signal r_sf  : std_logic := '0';
  signal r_nf  : std_logic := '0';
 
@@ -99,6 +102,7 @@ architecture struct of mb88 is
 
  signal interrupt_pending : std_logic := '0';
  signal timer_interrupt_pending : std_logic := '0';
+ signal r_in_irq : std_logic := '0';  -- MCU-INIRQ-FIX-2026-06-22: nested-IRQ guard (ported from mb88xx.v / MAME m_in_irq)
  signal irq_n_r           : std_logic := '0';
 
  signal tc_n_r : std_logic := '0';
@@ -199,6 +203,20 @@ clock_n <= not clock;
 reset   <= not reset_n;
 
 rom_addr <= r_pa & r_pc;
+
+-- MCU-TIMERVF-FIX-2026-06-22: the timer-overflow condition, combinational (mirrors the timer block's r_vf<='1').
+-- darfpga ticks the timer BEFORE the instruction; MAME does it after (burn_cycles). So a tstv on the same cycle
+-- as an overflow would clear r_vf and LOSE that overflow -> a poll-based countdown (the 45s ape timer) starves
+-- while the interrupt-driven heartbeat survives. tstv now skips its clear when this is high (see X"26").
+tmr_ovf <= '1' when ( ((tc_n = '0' and tc_n_r = '1' and r_pio(6) = '1') or
+                       (tmr_itick = '1' and r_pio(7) = '1'))
+                      and r_tl = X"F" and r_th = X"F" ) else '0';
+
+-- MCU-PRESC-FIX-2026-06-22: timer prescaler tick = every 32 INSTRUCTIONS (ena & single_byte_op = 1 instr), like
+-- MAME's m_TP += cycles in burn_cycles. The old clock-based ena_timer over-counted during the long timer ISR
+-- (2-byte ops add clocks), overflowing the timer mid-ISR -> with m_in_irq the ISR re-fired back-to-back -> the
+-- main loop starved -> the 45s count never reached 0x202 (clear R0 bit1) -> ape never spawned.
+tmr_itick <= '1' when (ena = '1' and single_byte_op = '1' and tmr_presc = "011111") else '0';
 
 ram_addr <= X"0" & rom_data(2 downto 0) when ((rom_data >= X"50") and (rom_data <= X"57")) else r_x(2 downto 0) & r_y;
 
@@ -386,12 +404,19 @@ begin
 		r_sbcnt <= (others=>'0');
 		interrupt_pending <= '0';
 		timer_interrupt_pending <= '0';
+		r_in_irq <= '0';  -- MCU-INIRQ-FIX-2026-06-22
 		stack <= (others=>(others=>'0'));
 		single_byte_op <= '1';
  else
 		tc_n_r <= tc_n;
+		-- MCU-PRESC-FIX-2026-06-22: count INSTRUCTIONS (single_byte_op=1 = a new instruction; the 2nd byte of a
+		-- 2-byte op has single_byte_op=0 and is NOT counted), /32 -> tmr_itick. Matches MAME's per-instruction m_TP.
+		if ena = '1' and single_byte_op = '1' then
+			if tmr_presc = "011111" then tmr_presc <= (others=>'0');
+			else tmr_presc <= tmr_presc + 1; end if;
+		end if;
 		if (tc_n = '0' and tc_n_r = '1' and r_pio(6) = '1') or
-		   (ena = '1' and ena_timer = '1' and r_pio(7) = '1')
+		   (tmr_itick = '1' and r_pio(7) = '1')
 		then
 			r_tl <= r_tl + 1;
 			if r_tl = X"F" then
@@ -418,7 +443,7 @@ begin
 			end if;
 
 			if single_byte_op = '1' then
-				if interrupt_pending = '1' or timer_interrupt_pending = '1' then
+				if (interrupt_pending = '1' or timer_interrupt_pending = '1') and r_in_irq = '0' then r_in_irq <= '1';  -- MCU-INIRQ-FIX-2026-06-22: gate + set nested-IRQ guard (MAME m_in_irq)
 					stack(to_integer(unsigned(r_si)))(13 downto 0) <= (r_cf & r_zf & r_stf & r_pa & r_pc);
 -- MCU-IRQVEC-FIX-2026-06-22: MAME mb88xx.cpp:462-470 vectors EXTERNAL irq->0x02 but TIMER irq->0x04.
 						-- darfpga sent BOTH to 0x02 -> Kangaroo's timer/ape ISR (at 0x04) never ran -> the MCU
@@ -500,7 +525,9 @@ begin
 						if r_y(3 downto 2) = "10" then r_stf <= not r2_port_in(to_integer(unsigned(r_y(1 downto 0)))); end if;
 						if r_y(3 downto 2) = "11" then r_stf <= not r3_port_in(to_integer(unsigned(r_y(1 downto 0)))); end if;
 					when X"25"  => r_stf <= not r_nf;                                         -- tsti (interrupt)
-					when X"26"  => r_stf <= not r_vf; r_vf <= '0';                            -- tstv (timer overflow)
+					when X"26"  => r_stf <= not r_vf;                                        -- tstv (timer overflow)
+						-- MCU-TIMERVF-FIX-2026-06-22: keep a coincident overflow (don't clear r_vf if the timer overflows THIS cycle)
+						if tmr_ovf = '0' then r_vf <= '0'; end if;
 					when X"27"  => r_stf <= not r_sf; r_sf <= '0';                            -- tsts (serial)
 					when X"28"  => r_stf <= not r_cf;                                         -- tstc (CF)
 					when X"29"  => r_stf <= not r_zf;                                         -- tstz (ZF)
@@ -522,6 +549,7 @@ begin
 						r_stf <= stack(to_integer(unsigned(r_si-"01")))(11);
 						r_zf  <= stack(to_integer(unsigned(r_si-"01")))(12);
 						r_cf  <= stack(to_integer(unsigned(r_si-"01")))(13);
+						r_in_irq <= '0';  -- MCU-INIRQ-FIX-2026-06-22: clear nested-IRQ guard on rti (MAME m_in_irq)
 						r_si  <= r_si - "01";
 					when X"3D" => single_byte_op <= '0';                                   -- jpa
 					when X"3E" => single_byte_op <= '0';                                   -- en
