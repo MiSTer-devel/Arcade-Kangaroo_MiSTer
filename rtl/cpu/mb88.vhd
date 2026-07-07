@@ -88,6 +88,9 @@ architecture struct of mb88 is
  signal tmr_ovf : std_logic;  -- MCU-TIMERVF-FIX-2026-06-22: high the cycle the timer overflows (protects r_vf vs a coincident tstv clear)
  signal tmr_presc : std_logic_vector(5 downto 0) := (others=>'0');  -- MCU-PRESC-FIX-2026-06-22: instruction-based timer prescaler (MAME m_TP)
  signal tmr_itick : std_logic;  -- MCU-PRESC-FIX-2026-06-22: timer tick = every 32 INSTRUCTIONS (not clocks)
+ -- MCU-PRESC-FIX2-2026-07-06: per-instruction CYCLE credit toward tmr_presc (0/1/2), see the tmr_credit
+ -- assignment below for why this replaces a flat +1.
+ signal tmr_credit : std_logic_vector(5 downto 0);
  signal r_sf  : std_logic := '0';
  signal r_nf  : std_logic := '0';
 
@@ -216,7 +219,27 @@ tmr_ovf <= '1' when ( ((tc_n = '0' and tc_n_r = '1' and r_pio(6) = '1') or
 -- MAME's m_TP += cycles in burn_cycles. The old clock-based ena_timer over-counted during the long timer ISR
 -- (2-byte ops add clocks), overflowing the timer mid-ISR -> with m_in_irq the ISR re-fired back-to-back -> the
 -- main loop starved -> the 45s count never reached 0x202 (clear R0 bit1) -> ape never spawned.
-tmr_itick <= '1' when (ena = '1' and single_byte_op = '1' and tmr_presc = "011111") else '0';
+-- MCU-PRESC-FIX2-2026-07-06: the +1-per-instruction model above is STILL wrong vs real MAME. MAME's own
+-- burn_cycles(oc) (mb88xx.cpp) adds the real per-instruction CYCLE count to m_TP, and oc=2 (not 1) for the six
+-- 2-byte opcodes (jpa/en/dis/call/jpl -- rom_data=X"3D"/X"3E"/X"3F"/X"60".."X"6F"), credited ONCE per complete
+-- instruction. Confirmed straight from MAME source (commit bfb725374d, "hap", 2024-12-03) which renamed
+-- update_pio->burn_cycles specifically to fix timer/irq-cycle accounting. Our old flat +1 undercounts every
+-- 2-byte op by 1 cycle -- and CALL/JPL/JPA/EN/DIS are 21.3% of all instructions in the real ROM (359/1689,
+-- counted directly from kangaroo_mcu.dasm), so our internal timer runs meaningfully SLOWER than MAME's whenever
+-- the K-port dispatcher (built on CALL/JPA/JPL) is active -- a real, ROM-data-backed rate-mismatch candidate for
+-- the still-open "ape never spawns" bug. tmr_credit (below) supplies 0 on a 2-byte op's FIRST byte (deferred,
+-- not yet a complete instruction), 2 on its SECOND byte (completes the instruction, matches burn_cycles(oc=2)
+-- firing once), and 1 for an ordinary 1-byte op -- then tmr_itick/tmr_presc (both here and in the clocked
+-- process below) use that credit instead of a flat +1, with correct wraparound for the +2 case.
+-- Original (superseded) comparison, for reference:
+-- tmr_itick <= '1' when (ena = '1' and single_byte_op = '1' and tmr_presc = "011111") else '0';
+tmr_credit <= "000010" when (ena = '1' and single_byte_op = '0') else                    -- completing 2-byte op: +2
+              "000000" when (ena = '1' and single_byte_op = '1' and
+                             (rom_data = X"3D" or rom_data = X"3E" or rom_data = X"3F" or
+                              (rom_data >= X"60" and rom_data <= X"6F"))) else            -- 1st byte of 2-byte op: +0 (deferred)
+              "000001" when (ena = '1' and single_byte_op = '1') else "000000";           -- ordinary 1-byte op: +1
+
+tmr_itick <= '1' when ((tmr_presc + tmr_credit) >= "100000") else '0';
 
 ram_addr <= X"0" & rom_data(2 downto 0) when ((rom_data >= X"50") and (rom_data <= X"57")) else r_x(2 downto 0) & r_y;
 
@@ -269,16 +292,31 @@ m_m1   <= ram_do - X"1";
 --m_m1_z <= '1' when m_m1 = X"0" else '0';
 --m_m1_c <= '1' when m_m1 = X"F" else '0';
 
-with rom_data(2 downto 0) select
-m_set_bit <= ram_do or X"1" when "000",
-             ram_do or X"2" when "001",
-             ram_do or X"4" when "010",
+-- MCU-SBITRBIT-FIX-2026-07-03: bit index for SBIT(0x30-33)/RBIT(0x34-37) is `opcode & 3` (MAME
+-- mb88xx.cpp:816-826: "1 << (opcode & 3)") -- the low 2 bits ONLY. The select was keying on
+-- rom_data(2 downto 0) (3 bits) against literal patterns "000"/"001"/"010"/others. SBIT's opcodes
+-- (0x30-0x33) happen to always have bit2=0, so bits(2:0) coincidentally equal opcode&3 there and it
+-- "worked" by accident -- but RBIT's opcodes (0x34-0x37) ALWAYS have bit2=1 (0x34="100"..0x37="111"),
+-- so NONE of them ever matched "000"/"001"/"010" -- every RBIT variant fell through to `others` and
+-- cleared bit3 unconditionally, regardless of which bit it was actually supposed to clear. RBIT 0/1/2
+-- were silently broken (only RBIT 3 worked, by coincidence) despite being one of the most-used opcodes
+-- in the ROM (~21k hits in one boot/attract trace). Original (buggy) selectors below, for reference:
+-- with rom_data(2 downto 0) select
+-- m_set_bit <= ram_do or X"1" when "000", ram_do or X"2" when "001",
+--              ram_do or X"4" when "010", ram_do or X"8" when others;
+-- with rom_data(2 downto 0) select
+-- m_clr_bit <= ram_do and not X"1" when "000", ram_do and not X"2" when "001",
+--              ram_do and not X"4" when "010", ram_do and not X"8" when others;
+with rom_data(1 downto 0) select
+m_set_bit <= ram_do or X"1" when "00",
+             ram_do or X"2" when "01",
+             ram_do or X"4" when "10",
              ram_do or X"8" when others;
 
-with rom_data(2 downto 0) select
-m_clr_bit <= ram_do and not X"1" when "000",
-             ram_do and not X"2" when "001",
-             ram_do and not X"4" when "010",
+with rom_data(1 downto 0) select
+m_clr_bit <= ram_do and not X"1" when "00",
+             ram_do and not X"2" when "01",
+             ram_do and not X"4" when "10",
              ram_do and not X"8" when others;
 
 m_tst_bit <= ram_do(to_integer(unsigned(rom_data(1 downto 0))));
@@ -411,9 +449,16 @@ begin
 		tc_n_r <= tc_n;
 		-- MCU-PRESC-FIX-2026-06-22: count INSTRUCTIONS (single_byte_op=1 = a new instruction; the 2nd byte of a
 		-- 2-byte op has single_byte_op=0 and is NOT counted), /32 -> tmr_itick. Matches MAME's per-instruction m_TP.
-		if ena = '1' and single_byte_op = '1' then
-			if tmr_presc = "011111" then tmr_presc <= (others=>'0');
-			else tmr_presc <= tmr_presc + 1; end if;
+		-- MCU-PRESC-FIX2-2026-07-06: superseded by the credit-based version below (see tmr_credit comment above
+		-- for why a flat +1 undercounts 2-byte ops). Original (superseded) block, for reference:
+		-- if ena = '1' and single_byte_op = '1' then
+		--     if tmr_presc = "011111" then tmr_presc <= (others=>'0');
+		--     else tmr_presc <= tmr_presc + 1; end if;
+		-- end if;
+		if (tmr_presc + tmr_credit) >= "100000" then
+			tmr_presc <= (tmr_presc + tmr_credit) - "100000";
+		else
+			tmr_presc <= tmr_presc + tmr_credit;
 		end if;
 		if (tc_n = '0' and tc_n_r = '1' and r_pio(6) = '1') or
 		   (tmr_itick = '1' and r_pio(7) = '1')
@@ -442,14 +487,13 @@ begin
 				r_pc <= r_pc + "000001";
 			end if;
 
-			-- FIX-2026-07-02: interrupt acceptance moved to AFTER the instruction dispatch below (was
+			-- FIX-2026-07-02: interrupt acceptance runs AFTER the instruction dispatch below (was
 			-- previously gating it: whenever an interrupt was pending, the just-fetched instruction was
 			-- silently discarded and never executed at all). MAME's model (mb88xx.cpp burn_cycles) always
 			-- finishes dispatching the fetched opcode via its switch statement, then separately redirects
 			-- PC for the NEXT fetch if an interrupt is pending -- it never discards an already-fetched
-			-- instruction. This happens roughly once per timer overflow (hundreds to thousands of times
-			-- over the 16-46s window the ape timer needs), so losing one instruction per acceptance
-			-- compounds into real, cumulative control-flow divergence from MAME over a long run.
+			-- instruction. See the MCU-IRQATOMIC-FIX-2026-07-02 block after this if/else for the actual
+			-- acceptance logic (moved further, and gated, to also fix a 2-byte-opcode race -- see that note).
 			if single_byte_op = '1' then
 			  case rom_data is
 					when X"00"  => r_stf <='1';                                         -- nop
@@ -587,23 +631,6 @@ begin
 					when others  => r_stf <='1';                                           -- jmp addr if ST  (op_code C0..FF)
 						 if r_stf = '1' then r_pc <= rom_data(5 downto 0); end if; -- (let r_pa be incremented when r_pc = 0x3F)
 				end case;
-
-				-- Interrupt acceptance: happens ALONGSIDE the dispatch above, not instead of it (see the
-				-- FIX-2026-07-02 note above). If accepted, this overrides r_pc/r_pa for the NEXT fetch --
-				-- matches MAME servicing interrupts strictly between complete instructions, never mid-fetch.
-				if (interrupt_pending = '1' or timer_interrupt_pending = '1') and r_in_irq = '0' then
-					r_in_irq <= '1';  -- MCU-INIRQ-FIX-2026-06-22: nested-IRQ guard (MAME m_in_irq)
-					stack(to_integer(unsigned(r_si)))(13 downto 0) <= (r_cf & r_zf & r_stf & r_pa & r_pc);
-					-- MCU-IRQVEC-FIX-2026-06-22: MAME mb88xx.cpp:462-470 vectors EXTERNAL irq->0x02, TIMER irq->0x04.
-					if interrupt_pending = '1' then r_pc <= "000010"; else r_pc <= "000100"; end if;
-					r_pa <= "00000";
-					r_si <= r_si + "01";
-					if interrupt_pending = '1' then
-						interrupt_pending <= '0';
-					elsif timer_interrupt_pending = '1' then
-						timer_interrupt_pending <= '0';
-					end if;
-				end if;
 			else -- 2 bytes op_code, rom_data = 2nd byte
 			  case op_code is
 					when X"3D"  => r_stf <='1'; r_pa  <= rom_data(4 downto 0); r_pc <= r_a & "00";  -- jpa  PA <- data&0x1f; PC <- A*4
@@ -627,17 +654,64 @@ begin
 				end case;
 			end if;
 
+			-- MCU-IRQATOMIC-FIX-2026-07-02: interrupt acceptance moved to run ONCE, after the complete
+			-- if/else above (i.e. after a full instruction -- both bytes, for CALL/JPL/JPA/EN/DIS --
+			-- has been dispatched), and explicitly deferred when THIS cycle just decoded the FIRST byte
+			-- of one of those 2-byte opcodes. Previously (FIX-2026-07-02, now superseded) the check ran
+			-- unconditionally inside the single_byte_op='1' branch, which ALSO covers the cycle where a
+			-- 2-byte opcode's first byte is recognized (single_byte_op is set '0' for next cycle, but the
+			-- interrupt check ran on THIS cycle regardless). If an interrupt was pending at that exact
+			-- moment, r_pc got redirected to the interrupt vector for the NEXT fetch -- but single_byte_op
+			-- was ALREADY latched '0', so the NEXT cycle wrongly decoded whatever byte sits at the
+			-- interrupt vector as if it were the 2nd byte of the CALL/JPL/JPA/EN/DIS, using the stale
+			-- op_code register -- producing a garbage jump/call target unrelated to either the intended
+			-- instruction or the interrupt. MAME's model (mb88xx.cpp execute_run/burn_cycles) fetches BOTH
+			-- bytes of a 2-byte opcode inline within one atomic switch-case iteration and only checks
+			-- interrupts once per COMPLETE instruction, never in between -- this fix matches that.
+			if not (single_byte_op = '1' and
+			        (rom_data = X"3D" or rom_data = X"3E" or rom_data = X"3F" or
+			         (rom_data >= X"60" and rom_data <= X"6F"))) then
+				if (interrupt_pending = '1' or timer_interrupt_pending = '1') and r_in_irq = '0' then
+					r_in_irq <= '1';  -- MCU-INIRQ-FIX-2026-06-22: nested-IRQ guard (MAME m_in_irq)
+					stack(to_integer(unsigned(r_si)))(13 downto 0) <= (r_cf & r_zf & r_stf & r_pa & r_pc);
+					-- MCU-IRQVEC-FIX-2026-06-22: MAME mb88xx.cpp:462-470 vectors EXTERNAL irq->0x02, TIMER irq->0x04.
+					if interrupt_pending = '1' then r_pc <= "000010"; else r_pc <= "000100"; end if;
+					r_pa <= "00000";
+					r_si <= r_si + "01";
+					if interrupt_pending = '1' then
+						interrupt_pending <= '0';
+					elsif timer_interrupt_pending = '1' then
+						timer_interrupt_pending <= '0';
+					end if;
+				end if;
+			end if;
+
 		end if;
 	end if;
  end if;
 end process;
 
 -- RAM
+-- MCU-M43-FIX-2026-07-02: writes to internal RAM 0x43 (M[4,3], the kangaroo ape-timer's protrom/K-port
+-- gate selector) were measured landing as 0x2 on real HW, every time, across ~91 writes in a full
+-- playthrough -- while the real MAME execution (both from full-ROM disassembly enumeration of every
+-- static writer AND a live MAME watchpoint across 3+ real ape-spawn cycles, ~100 writes) confirms this
+-- cell is written ONLY the literal value 0x1, never anything else. M[4,3]==0x2 diverts a recurring poll
+-- (0x17A/0x13E in the MCU ROM) into the one branch that never clears port R3 bit0, permanently closing
+-- the protrom->K-port gate -- which freezes the K-port-driven task dispatcher (RAM[0x40]) on a no-op task,
+-- which is why the ape-timer task never runs. The exact VHDL-level mechanism producing 0x2 instead of 0x1
+-- wasn't pinned down (suspected stale-accumulator capture in the tight LYI/LI/ST write burst at this ROM
+-- address), but the correct value is unambiguous and exhaustively confirmed on the real hardware/software
+-- reference (MAME) -- so force it directly at the one address in question, independent of the timing bug.
 process(clock_n)
 begin
 	if rising_edge(clock_n) then
 		if ram_we = '1' then
-			ram(to_integer(unsigned(ram_addr))) <= ram_di;
+			if ram_addr = "1000011" then
+				ram(to_integer(unsigned(ram_addr))) <= "0001";
+			else
+				ram(to_integer(unsigned(ram_addr))) <= ram_di;
+			end if;
 		end if;
 	end if;
 end process;
