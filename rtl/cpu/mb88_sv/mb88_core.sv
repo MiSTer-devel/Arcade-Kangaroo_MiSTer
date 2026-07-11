@@ -76,6 +76,9 @@ module mb88_core
     wire [3:0] mem = ram[ea];
     assign prog_addr = {PA, PC};                 // GETPC
     wire [7:0] op = prog_data;
+    // MCU-TIMERVF-FIX-2026-07-11: "timer overflows THIS clock" (mirrors the timer block's vf<=1);
+    // lets tstv skip its vf-clear on a coincident overflow so the poll-based ape timer doesn't lose ticks.
+    wire timer_ovf_now = ena_timer && pio[7] && (TL == 4'hF) && (TH == 4'hF);
 
     // INCPC (PC 6-bit rolls into PA at 0x40)
     wire [5:0] pc_n = (PC==6'h3f) ? 6'h00 : PC + 6'd1;
@@ -117,7 +120,7 @@ module mb88_core
           if (~irq_n && !iflag && pio[2]) pending_irq[2] <= 1'b1;
           // timer: ena_timer is ALREADY ÷32-prescaled externally (Kangaroo mcu_tp),
           // so increment TL directly -> TH cascade -> overflow -> timer IRQ pending.
-          if (ena_timer) begin
+          if (ena_timer && pio[7]) begin  // MCU-TIMER-FIX-2026-07-11: gate on pio7 (MAME m_pio&0x80 / old VHDL r_pio(7)); was "if (ena_timer)" with no pio7 gate
             TL <= TL + 4'd1;
             if (TL == 4'hF) begin
               TH <= TH + 4'd1;
@@ -180,7 +183,7 @@ module mb88_core
                 8'h23: begin cf<=0; st<=1; end                  // rstc
                 8'h24: st <= (r_in[{Y[3:2],2'b0} +: 4] & (4'd1<<Y[1:0])) ? 1'b0 : 1'b1; // tstr
                 8'h25: st <= ~iflag;                            // tsti
-                8'h26: begin st<=~vf; vf<=0; end                // tstv
+                8'h26: begin st<=~vf; if (!timer_ovf_now) vf<=0; end // tstv — MCU-TIMERVF-FIX-2026-07-11: skip clear on coincident overflow; was "vf<=0;" unconditional
                 8'h27: begin st<=~sf; sf<=0; end                // tsts (serial stubbed)
                 8'h28: st <= ~cf;                               // tstc
                 8'h29: st <= ~zf;                               // tstz
