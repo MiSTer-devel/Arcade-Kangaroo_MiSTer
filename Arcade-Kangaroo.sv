@@ -493,7 +493,6 @@ Kangaroo kangaroo_inst
 
 	.pause(pause_cpu),
 
-	// HISCORE-2026-06-21: wired to the hiscore module (was stubbed to 0).
 	.hs_address(hs_address),
 	.hs_data_in(hs_data_in),
 	.hs_data_out(hs_data_out),
