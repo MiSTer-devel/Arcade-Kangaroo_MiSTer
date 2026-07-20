@@ -1,18 +1,23 @@
 // ============================================================================
-//  mb88.sv  —  drop-in wrapper matching darfpga rtl/cpu/mb88.vhd's entity, so it
-//  swaps into Kangaroo_CPU.sv's `mb88 mcu (...)` instantiation with no other edits.
-//  Wraps the combinational-RAM mb88_core (mb88_sv/mb88_core.sv), which is validated
-//  against MAME's kangaroo_ape.trace and fixes the protection-MCU hang the deployed
-//  mb88.vhd suffered (BRAM data-RAM read-after-write hazard in the K-debounce).
+//  mb88.sv  —  wrapper presenting darfpga/Xevious's EXACT `mb88` entity, so it
+//  binds to poleposition.vhd's `entity work.mb88` instantiations (cs51xx / cs54xx /
+//  cs50xx) with NO edit to the game logic. Wraps our combinational-RAM mb88_core
+//  (mb88_sv/mb88_core.sv) — the validated rewrite that fixes the BRAM read-after-
+//  write hazard the deployed darfpga mb88.vhd suffered.
 //
-//  Kangaroo ties r_in<-r_out (read_r = output latch); O port = protrom address.
+//  vs the Xevious/darfpga entity our core added ONE port (`ena_timer`, which Kangaroo
+//  drove pre-÷32 externally). That port is dropped here and the ÷32 timer tick is
+//  generated INTERNALLY from `ena`, so the entity now matches exactly.
+//
+//  NOTE (mixed-language): poleposition.vhd instantiates this via `entity work.mb88`
+//  (VHDL-instantiates-SystemVerilog). Verify Quartus 17 binds it; if not, a thin VHDL
+//  shim entity `mb88` wrapping mb88_core is the fallback.
 // ============================================================================
 
 module mb88
 (
     input  wire        clock,
     input  wire        ena,
-    input  wire        ena_timer,
     input  wire        reset_n,
 
     input  wire [3:0]  r0_port_in,  r1_port_in,  r2_port_in,  r3_port_in,
@@ -41,16 +46,37 @@ module mb88
     assign ol_port_out = o_out[3:0];
     assign oh_port_out = o_out[7:4];
 
-    // serial/handshake outputs unused by Kangaroo — hold inactive (active-low)
+    // serial/handshake outputs — mb88_core serial is a stub (as was darfpga's "Todo: Serial")
     assign sc_out_n = 1'b1;
     assign so_n     = 1'b1;
     assign to_n     = 1'b1;
+
+    // ---- internal timer prescaler (mb88_core wants ena_timer PRE-÷32) ----
+    // The darfpga/Xevious mb88 entity has no ena_timer port (its VHDL core divided
+    // internally). Generate it here: one ena_timer pulse per 32 `ena` machine-cycle
+    // enables — MAME mb88 burn_cycles /32 (full timer overflow = ÷8192 of `ena`).
+    // Free-running vs pio7 (the core gates the TL increment on pio7 itself); per the
+    // mb88 co-sim log the pio7 phase is inert here (pio7 set once at init, not toggled).
+    reg [4:0] tdiv;
+    reg       ena_timer_int;
+    always @(posedge clock) begin
+        if (!reset_n) begin
+            tdiv          <= 5'd0;
+            ena_timer_int <= 1'b0;
+        end else begin
+            ena_timer_int <= 1'b0;
+            if (ena) begin
+                tdiv <= tdiv + 5'd1;
+                if (tdiv == 5'd31) ena_timer_int <= 1'b1;
+            end
+        end
+    end
 
     mb88_core core
     (
         .clk       (clock),
         .ce        (ena),
-        .ena_timer (ena_timer),
+        .ena_timer (ena_timer_int),
         .reset_n   (reset_n),
 
         .prog_addr (rom_addr),

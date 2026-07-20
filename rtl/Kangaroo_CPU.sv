@@ -300,10 +300,9 @@ wire n_nmi = mcu_present ? mcu_nmi_n : n_nmi_boot;
 // darfpga mb88 has separate R in/out ports and no external drive on kangaroo's R pins, so tie in<-out
 // (MAME's read_r returns the output latch). Nothing drives the MCU /IRQ or /TC externally on kangaroo.
 
-reg  [4:0] mcu_tp = 5'd0;          // timer prescaler approximation (MAME TIMER_PRESCALE=32)
-always_ff @(posedge clk_10m) if (cen_2m5 & ~pause) mcu_tp <= mcu_tp + 5'd1;
+// timer ÷32 prescaler (MAME TIMER_PRESCALE=32) now lives INSIDE the mb88.sv wrapper
+// (generated from `ena`, no external ena_timer port anymore — see mb88.sv header).
 wire mcu_ena       = cen_2m5 & ~pause;
-wire mcu_ena_timer = mcu_ena & (mcu_tp == 5'd0);
 wire mcu_reset_n   = reset & mcu_present;     // hold in reset unless MB8841 is fitted
 
 wire [10:0] mcu_rom_addr;
@@ -330,7 +329,6 @@ mb88 mcu
 (
     .clock      (clk_10m),
     .ena        (mcu_ena),
-    .ena_timer  (mcu_ena_timer),
     .reset_n    (mcu_reset_n),
 
     .r0_port_in (r0_out), .r1_port_in (r1_out), .r2_port_in (r2_out), .r3_port_in (r3_out),
