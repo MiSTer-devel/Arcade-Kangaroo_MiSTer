@@ -63,7 +63,7 @@ Default MiSTer gamepad mapping:
 
 - Arcade-accurate CPU timing
 - Sprite priority and layer handling
-- High score saving support - Loading is still broken (Working on it)
+- High score saving support
 - MiSTer-compatible .mra provided
 - Verified ROM definitions with checksums
 
