@@ -643,6 +643,17 @@ reg [7:0]  blit_y_cnt;
 reg [15:0] blit_cur_src;
 reg [15:0] blit_cur_dst;
 reg [7:0]  blit_adj_mask;
+// BLITQUEUE-2026-08-21: MAME's blitter_execute() is SYNCHRONOUS inside the $E805
+// write, so software can never issue a blit "too early". Ours takes ~1200 clocks
+// for a 28x7 sprite and previously only accepted a start in ST_IDLE, so a trigger
+// arriving mid-blit was SILENTLY DROPPED. The glove-less overdraw at $111A is
+// issued ~15 instructions after the body blit at $1102 and was dropped on 100% of
+// frames -- which is why stolen gloves never disappeared. Queue one trigger
+// instead. (Stalling the CPU with WAIT_n was tried first and starved the Z80 to
+// ~3% speed, because this blitter is ~6 clocks/pixel.)
+reg        blit_pend = 0;
+reg [7:0]  pend_w, pend_h, pend_mask;
+reg [15:0] pend_src, pend_dst;
 reg [7:0]  blit_rom_data_lo;
 reg [7:0]  blit_rom_data_hi;
 
@@ -665,18 +676,30 @@ always_ff @(posedge clk_10m) begin
     else begin
         vram_we_a <= 0;  // Default: no write
 
+        // BLITQUEUE-2026-08-21: a trigger arriving mid-blit cannot start now, so
+        // snapshot its registers and run it when the current blit finishes.
+        // Kept in THIS always block so blit_pend has a single driver (Quartus).
+        if (blitter_start && vram_state != ST_IDLE) begin
+            blit_pend <= 1'b1;
+            pend_w    <= video_control[4];
+            pend_h    <= video_control[5];
+            pend_src  <= {video_control[1], video_control[0]};
+            pend_dst  <= {video_control[3], video_control[2]};
+            pend_mask <= video_control[8];
+        end
+
         case (vram_state)
             ST_IDLE: begin
-                if (blitter_start) begin
-                    // Latch blitter params
-                    blit_width   <= video_control[4];
-                    blit_height  <= video_control[5];
-                    blit_cur_src <= {video_control[1], video_control[0]};
-                    blit_cur_dst <= {video_control[3], video_control[2]};
+                if (blitter_start || blit_pend) begin
+                    // BLITQUEUE-2026-08-21: take a queued trigger if one is waiting.
+                    blit_width   <= blitter_start ? video_control[4] : pend_w;
+                    blit_height  <= blitter_start ? video_control[5] : pend_h;
+                    blit_cur_src <= blitter_start ? {video_control[1], video_control[0]} : pend_src;
+                    blit_cur_dst <= blitter_start ? {video_control[3], video_control[2]} : pend_dst;
                     blit_x_cnt  <= 0;
                     blit_y_cnt  <= 0;
-                    // Compute adjusted mask
-                    blit_adj_mask <= video_control[8];
+                    blit_adj_mask <= blitter_start ? video_control[8] : pend_mask;
+                    if (!blitter_start) blit_pend <= 1'b0;   // consumed the queued one
                     vram_state <= ST_BLIT_SETUP;
                 end
                 else if (cs_videoram & ~n_wr) begin
