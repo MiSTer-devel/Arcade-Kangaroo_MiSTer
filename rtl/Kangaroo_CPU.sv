@@ -181,18 +181,34 @@ eprom_4k rom5 (.ADDR(cpu_A[11:0]), .CLK(clk_10m), .DATA(rom5_D),
 //------------------------------------------------------- Blitter ROMs --------------------------------------------------------//
 
 // Blitter has 4 x 4KB ROMs, banked into 0xC000-0xDFFF via bank select (video_control[8])
-// Bank 0: blit0 + blit2 (when bit 0 or 2 of bank select is 0)
-// Bank 1: blit1 + blit3 (when bit 0 or 2 of bank select is set)
-// MAME: m_blitbank->set_entry((data & 0x05) ? 1 : 0)
-// Bank 0 maps: C000-CFFF=blit0(v0), D000-DFFF=blit2(v1)
-// Bank 1 maps: C000-CFFF=blit1(v2), D000-DFFF=blit3(v3)
+// BLITBANK-FIX-2026-08-21: two errors, originals commented below.
+// MAME is ONE CONTIGUOUS 8K bank over the 16K blitter image
+// (kangaroo.cpp:427 configure_entries(0,2,base,0x2000), :532 map(c000,dfff)),
+// and the image loads v0,v2,v1,v3 (kangaroo.cpp:772-775, matching Kangaroo.mra),
+// so blit0=v0 blit1=v2 blit2=v1 blit3=v3 and the banks are:
+//   entry 0 (base+0000): C000=blit0(v0)  D000=blit1(v2)
+//   entry 1 (base+2000): C000=blit2(v1)  D000=blit3(v3)
+// 1. PAIRING was {blit0,blit2}/{blit1,blit3} -- the D000 half was wrong in both.
+// 2. POLARITY was inverted: MAME kangaroo.cpp:310 is
+//    set_entry((data & 0x05) ? 0 : 1), i.e. NONZERO selects entry 0. The old
+//    comment here recorded it as "? 1 : 0", which is why this was cleared as a
+//    suspect on 2026-07-26.
+// // Bank 0: blit0 + blit2 (when bit 0 or 2 of bank select is 0)
+// // Bank 1: blit1 + blit3 (when bit 0 or 2 of bank select is set)
+// // Bank 0 maps: C000-CFFF=blit0(v0), D000-DFFF=blit2(v1)
+// // Bank 1 maps: C000-CFFF=blit1(v2), D000-DFFF=blit3(v3)
 
 wire [7:0] blit0_D, blit1_D, blit2_D, blit3_D;
-wire blit_bank_sel = (video_control[8] & 8'h05) != 0;  // MAME: (data & 0x05) ? 1 : 0
+// wire blit_bank_sel = (video_control[8] & 8'h05) != 0;  // BLITBANK-FIX-2026-08-21: was inverted
+wire blit_bank_hi = (video_control[8] & 8'h05) == 0;   // MAME: (data & 0x05) ? 0 : 1
 
+// BLITBANK-FIX-2026-08-21: original (wrong pairing) below.
+// assign blitbank_D = cpu_A[12] ?
+//     (blit_bank_sel ? blit3_D : blit2_D) :
+//     (blit_bank_sel ? blit1_D : blit0_D);
 assign blitbank_D = cpu_A[12] ?
-    (blit_bank_sel ? blit3_D : blit2_D) :
-    (blit_bank_sel ? blit1_D : blit0_D);
+    (blit_bank_hi ? blit3_D : blit1_D) :   // D000-DFFF: v3 / v2
+    (blit_bank_hi ? blit2_D : blit0_D);    // C000-CFFF: v1 / v0
 
 eprom_4k blit0 (.ADDR(cpu_A[11:0]), .CLK(clk_10m), .DATA(blit0_D),
                 .ADDR_DL(ioctl_addr), .CLK_DL(clk_10m), .DATA_IN(ioctl_data),
@@ -302,7 +318,22 @@ wire n_nmi = mcu_present ? mcu_nmi_n : n_nmi_boot;
 
 // timer ÷32 prescaler (MAME TIMER_PRESCALE=32) now lives INSIDE the mb88.sv wrapper
 // (generated from `ena`, no external ena_timer port anymore — see mb88.sv header).
-wire mcu_ena       = cen_2m5 & ~pause;
+// MCU-DIV6-KANGAROO-2026-08-21: original below, restore by setting MCU_CEN_DIV = 1.
+// `ena` is one MB88 MACHINE CYCLE, not one instruction: verilator/mb88_testsuite
+// (in the PolePosition tree) diffs mb88_core against MAME and shows 1 ce for 1-cycle
+// opcodes and 2 ce for the 19 two-cycle ones (3D/3E/3F/60-67/68-6F), 0 cycle failures.
+// mb88.sv's /32 timer prescaler counts `ena` and matches MAME's "increment every 32
+// MACHINE CYCLES", confirming the same equivalence.
+// MAME clocks this MCU at 10_MHz_XTAL/4 = 2.5 MHz PIN clock (kangaroo.cpp:733) and
+// converts at (clocks+5)/6 (mb88xx.h:126) => 416.67 kHz machine cycles. cen_2m5 is the
+// PIN rate, so feeding it straight to `ena` ran the MCU -- and its timer -- 6x fast.
+// Same rule as PolePosition's HW-confirmed MCU-DIV6: its 1.536 MHz pin / 6 = 256 kHz.
+// wire mcu_ena       = cen_2m5 & ~pause;
+localparam int MCU_CEN_DIV = 6;
+reg [2:0] mcu_div_cnt = 3'd0;
+always @(posedge clk_10m)
+    if (cen_2m5) mcu_div_cnt <= (mcu_div_cnt == MCU_CEN_DIV[2:0] - 3'd1) ? 3'd0 : mcu_div_cnt + 3'd1;
+wire mcu_ena       = cen_2m5 & ~pause & (mcu_div_cnt == MCU_CEN_DIV[2:0] - 3'd1);
 wire mcu_reset_n   = reset & mcu_present;     // hold in reset unless MB8841 is fitted
 
 wire [10:0] mcu_rom_addr;

@@ -3,5 +3,5 @@ Claude/
 db/
 incremental_db/
 output_files/
-verilator_mb88/
+verilator/
 .token-savior-cache.json
