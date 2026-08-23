@@ -182,11 +182,4 @@ wire signed [15:0] ay_signed = {1'b0, ay_sum, 5'd0} - 16'sd12288;  // rough cent
 
 assign sound_out = ay_signed;
 
-// DEBUG: 1kHz test tone
-//reg [13:0] tone_cnt = 0;
-//always_ff @(posedge clk_10m) begin
-//    tone_cnt <= tone_cnt + 1;
-//end
-//wire signed [15:0] test_tone = tone_cnt[13] ? 16'sd4000 : -16'sd4000;
-
 endmodule

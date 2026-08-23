@@ -27,9 +27,6 @@
     <num_buttons>2</num_buttons>
     <buttons names="Jump,Punch,Coin,Start 1P,Start 2P,Pause" default="A,B,Select,Start,R,L"/>
 
-    <!-- DIP-FIX-2026-06-21: aligned to MAME kangaroo DSW0. bits 2-3 are Bonus Life (were mislabeled Demo/Cabinet);
-         Lives/Difficulty value-order corrected; Coinage = MAME's dual A/B table. Cabinet/Music/Flip are in IN0,
-         not DSW0 (core forces IN0[7:5]=0, so not OSD-settable without a small core change). -->
     <switches default="00">
         <dip bits="0"     name="Lives" ids="3,5"/>
         <dip bits="1"     name="Difficulty" ids="Easy,Hard"/>

@@ -72,6 +72,6 @@
     <!-- Index 5: game-select mod byte. 01 = Funky Fish. Kangaroo MRAs omit this → core reads mod=0. -->
     <rom index="5"><part>01</part></rom>
 
-    <remark>Same hardware as Kangaroo bootleg — no MCU</remark>
+    <remark>Funky Fish</remark>
     <mratimestamp>20260412000000</mratimestamp>
 </misterromdescription>

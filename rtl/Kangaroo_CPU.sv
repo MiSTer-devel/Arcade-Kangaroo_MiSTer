@@ -20,7 +20,7 @@ module Kangaroo_CPU
     // Inputs
     input   [7:0] dsw0,             // 8-bit DIP switch
     input   [4:0] in0,              // IN0: service, start1, start2, coin_l, coin_r
-    // GAMESEL-2026-06-21: in1 widened 5->8 (bit5/0x20 = Funky Fish 2nd button). Original: input [4:0] in1,
+    // in1 is 8 bits wide; bits 7:5 are unused on this board.
     input   [7:0] in1,              // IN1: P1 right,left,up,down,punch + bit5 = FF 2nd btn (0x20)
     input   [7:0] in2,              // IN2: P2 right, left, up, down, punch
 
@@ -141,7 +141,7 @@ wire [7:0] cpu_Din =
     (cs_workram & ~n_rd) ? workram_D :
     cs_dsw         ? dsw0 :
     cs_in0         ? {3'b000, in0} :
-    // GAMESEL-2026-06-21: pass all 8 IN1 bits (was {3'b000, in1}, which forced bits 5-7 to 0 → 2nd button dead).
+    // All 8 IN1 bits reach the CPU; bits 7:5 read as 0.
     cs_in1         ? in1 :
     cs_in2         ? in2 :
     cs_mcu         ? mcu_dout :    // MB8841 R0 (original HW) or 0x00 (bootleg)
@@ -181,31 +181,14 @@ eprom_4k rom5 (.ADDR(cpu_A[11:0]), .CLK(clk_10m), .DATA(rom5_D),
 //------------------------------------------------------- Blitter ROMs --------------------------------------------------------//
 
 // Blitter has 4 x 4KB ROMs, banked into 0xC000-0xDFFF via bank select (video_control[8])
-// BLITBANK-FIX-2026-08-21: two errors, originals commented below.
-// MAME is ONE CONTIGUOUS 8K bank over the 16K blitter image
-// (kangaroo.cpp:427 configure_entries(0,2,base,0x2000), :532 map(c000,dfff)),
-// and the image loads v0,v2,v1,v3 (kangaroo.cpp:772-775, matching Kangaroo.mra),
-// so blit0=v0 blit1=v2 blit2=v1 blit3=v3 and the banks are:
+// MAME banks one contiguous 8K window over the 16K image (kangaroo.cpp:427, :532), and
+// the image loads v0,v2,v1,v3 (kangaroo.cpp:772-775), so blit0=v0 blit1=v2 blit2=v1 blit3=v3:
 //   entry 0 (base+0000): C000=blit0(v0)  D000=blit1(v2)
 //   entry 1 (base+2000): C000=blit2(v1)  D000=blit3(v3)
-// 1. PAIRING was {blit0,blit2}/{blit1,blit3} -- the D000 half was wrong in both.
-// 2. POLARITY was inverted: MAME kangaroo.cpp:310 is
-//    set_entry((data & 0x05) ? 0 : 1), i.e. NONZERO selects entry 0. The old
-//    comment here recorded it as "? 1 : 0", which is why this was cleared as a
-//    suspect on 2026-07-26.
-// // Bank 0: blit0 + blit2 (when bit 0 or 2 of bank select is 0)
-// // Bank 1: blit1 + blit3 (when bit 0 or 2 of bank select is set)
-// // Bank 0 maps: C000-CFFF=blit0(v0), D000-DFFF=blit2(v1)
-// // Bank 1 maps: C000-CFFF=blit1(v2), D000-DFFF=blit3(v3)
 
 wire [7:0] blit0_D, blit1_D, blit2_D, blit3_D;
-// wire blit_bank_sel = (video_control[8] & 8'h05) != 0;  // BLITBANK-FIX-2026-08-21: was inverted
 wire blit_bank_hi = (video_control[8] & 8'h05) == 0;   // MAME: (data & 0x05) ? 0 : 1
 
-// BLITBANK-FIX-2026-08-21: original (wrong pairing) below.
-// assign blitbank_D = cpu_A[12] ?
-//     (blit_bank_sel ? blit3_D : blit2_D) :
-//     (blit_bank_sel ? blit1_D : blit0_D);
 assign blitbank_D = cpu_A[12] ?
     (blit_bank_hi ? blit3_D : blit1_D) :   // D000-DFFF: v3 / v2
     (blit_bank_hi ? blit2_D : blit0_D);    // C000-CFFF: v1 / v0
@@ -316,19 +299,8 @@ wire n_nmi = mcu_present ? mcu_nmi_n : n_nmi_boot;
 // darfpga mb88 has separate R in/out ports and no external drive on kangaroo's R pins, so tie in<-out
 // (MAME's read_r returns the output latch). Nothing drives the MCU /IRQ or /TC externally on kangaroo.
 
-// timer ÷32 prescaler (MAME TIMER_PRESCALE=32) now lives INSIDE the mb88.sv wrapper
-// (generated from `ena`, no external ena_timer port anymore — see mb88.sv header).
-// MCU-DIV6-KANGAROO-2026-08-21: original below, restore by setting MCU_CEN_DIV = 1.
-// `ena` is one MB88 MACHINE CYCLE, not one instruction: verilator/mb88_testsuite
-// (in the PolePosition tree) diffs mb88_core against MAME and shows 1 ce for 1-cycle
-// opcodes and 2 ce for the 19 two-cycle ones (3D/3E/3F/60-67/68-6F), 0 cycle failures.
-// mb88.sv's /32 timer prescaler counts `ena` and matches MAME's "increment every 32
-// MACHINE CYCLES", confirming the same equivalence.
-// MAME clocks this MCU at 10_MHz_XTAL/4 = 2.5 MHz PIN clock (kangaroo.cpp:733) and
-// converts at (clocks+5)/6 (mb88xx.h:126) => 416.67 kHz machine cycles. cen_2m5 is the
-// PIN rate, so feeding it straight to `ena` ran the MCU -- and its timer -- 6x fast.
-// Same rule as PolePosition's HW-confirmed MCU-DIV6: its 1.536 MHz pin / 6 = 256 kHz.
-// wire mcu_ena       = cen_2m5 & ~pause;
+// `ena` is one MB88 machine cycle. MAME converts pin clocks at (clocks+5)/6, so the
+// 2.5 MHz pin rate is divided by 6. The /32 timer prescaler lives inside the mb88.sv wrapper.
 localparam int MCU_CEN_DIV = 6;
 reg [2:0] mcu_div_cnt = 3'd0;
 always @(posedge clk_10m)
@@ -453,16 +425,9 @@ end
 
 // Sync and blank generation
 // MAME visible: x = 0*2 to 256*2-1 = 0 to 511, y = 8 to 247
-// TOP-BOTTOM-FIX-2026-06-21: the scanout pixel pipeline is 2 clk_10m cycles deep (combinational addr ->
-// DPRAM addr-reg -> scan_word latch), so the pixel for h_cnt=H is output at H+2. hblank/hsync were
-// combinational off h_cnt, so the active window LED the data by 2 px -> 2 rows of pre-visible garbage at the
-// display TOP and the last 2 real rows pushed off the BOTTOM (h_cnt = display-vertical, ROT90). Delay
-// hblank/hsync by 2 cycles to align the window with the data. This is a latency match, NOT a directional
-// window shift (which wraps junk). v-axis has no such latency -> vblank/vsync stay combinational, and the
-// vblank IRQ keeps using the undelayed video_vblank (game timing untouched).
-// Original combinational lines below:
-// assign video_hblank = (h_cnt >= 10'd512);
-// assign video_hsync  = (h_cnt >= 10'd560) & (h_cnt < 10'd624);  // ~64 clocks
+// The scanout pipeline is 2 clk_10m cycles deep, so hblank/hsync are delayed to match.
+// This is a latency match, not a window shift; the v axis has no such latency, so
+// vblank/vsync stay combinational and the vblank IRQ uses the undelayed video_vblank.
 wire video_hblank_raw = (h_cnt >= 10'd512);
 wire video_hsync_raw  = (h_cnt >= 10'd560) & (h_cnt < 10'd624);  // ~64 clocks
 reg [1:0] hblank_sr = 2'b11;
@@ -520,11 +485,8 @@ dpram_dc #(.widthad_a(14), .width_a(16)) vram_hi
     .q_b(vram_hi_qb)
 );
 
-// DIAG-2026-06-18 PLANE-OFFSET FIX (the 2-month sprite-edge fringe). The scanout previously read plane A
-// and plane B through ONE shared port B (muxed on h_cnt[0]); with the 1-cycle DPRAM latency that left
-// plane A one COLUMN ahead of plane B at compositing → garbage at sprite EDGES (interiors fine). These two
-// MIRROR instances (written identically on port A) give plane B its own same-latency read port, so plane A
-// reads vram_lo/hi:B and plane B reads vram_lo2/hi2:B — aligned (recreates step4's combinational dual-read).
+// Mirror instances, written identically on port A, so plane B gets its own same-latency
+// read port: plane A reads vram_lo/hi:B and plane B vram_lo2/hi2:B, aligned to one column.
 wire [15:0] vram2_lo_qb, vram2_hi_qb;   // plane-B mirror scanout read data
 wire [13:0] vram_addr_b2;               // plane B scanout address (mirror port B)
 
@@ -629,9 +591,7 @@ localparam ST_BLIT_RMW_WR_HI = 4'd8;
 localparam ST_BLIT_NEXT   = 4'd9;
 localparam ST_CPU_RMW_RD2 = 4'd10;
 localparam ST_BLIT_ROWSTART = 4'd11;
-// DPRAM-LATENCY-FIX-2026-06-21: blitrom_mem is dpram_dc (altsyncram) = 2 clks addr-reg+read (the CPU RMW in
-// this file correctly waits 2). The blit ROM reads waited only 1 → LOW/HIGH captured a cycle early off the
-// shared port → 1-source-pixel skew between planes = the green/blue 1px fringe. These settle states fix it.
+// blitrom_mem is dpram_dc: 2 clocks address-to-data, so the ROM reads need settle states.
 localparam ST_BLIT_WAIT_LO  = 4'd12;
 localparam ST_BLIT_WAIT_HI  = 4'd13;
 
@@ -643,14 +603,10 @@ reg [7:0]  blit_y_cnt;
 reg [15:0] blit_cur_src;
 reg [15:0] blit_cur_dst;
 reg [7:0]  blit_adj_mask;
-// BLITQUEUE-2026-08-21: MAME's blitter_execute() is SYNCHRONOUS inside the $E805
-// write, so software can never issue a blit "too early". Ours takes ~1200 clocks
-// for a 28x7 sprite and previously only accepted a start in ST_IDLE, so a trigger
-// arriving mid-blit was SILENTLY DROPPED. The glove-less overdraw at $111A is
-// issued ~15 instructions after the body blit at $1102 and was dropped on 100% of
-// frames -- which is why stolen gloves never disappeared. Queue one trigger
-// instead. (Stalling the CPU with WAIT_n was tried first and starved the Z80 to
-// ~3% speed, because this blitter is ~6 clocks/pixel.)
+// MAME's blitter_execute() is synchronous inside the $E805 write, so software can issue
+// the next trigger a few instructions later. Ours takes ~1200 clocks for a 28x7 sprite,
+// so a trigger arriving mid-blit is queued rather than dropped. Stalling the CPU is not
+// an option here: this blitter is ~6 clocks/pixel.
 reg        blit_pend = 0;
 reg [7:0]  pend_w, pend_h, pend_mask;
 reg [15:0] pend_src, pend_dst;
@@ -676,9 +632,8 @@ always_ff @(posedge clk_10m) begin
     else begin
         vram_we_a <= 0;  // Default: no write
 
-        // BLITQUEUE-2026-08-21: a trigger arriving mid-blit cannot start now, so
-        // snapshot its registers and run it when the current blit finishes.
-        // Kept in THIS always block so blit_pend has a single driver (Quartus).
+        // Snapshot a trigger arriving mid-blit and run it when the current blit finishes.
+        // Kept in this always block so blit_pend has a single driver.
         if (blitter_start && vram_state != ST_IDLE) begin
             blit_pend <= 1'b1;
             pend_w    <= video_control[4];
@@ -691,7 +646,7 @@ always_ff @(posedge clk_10m) begin
         case (vram_state)
             ST_IDLE: begin
                 if (blitter_start || blit_pend) begin
-                    // BLITQUEUE-2026-08-21: take a queued trigger if one is waiting.
+                    // Take a queued trigger if one is waiting.
                     blit_width   <= blitter_start ? video_control[4] : pend_w;
                     blit_height  <= blitter_start ? video_control[5] : pend_h;
                     blit_cur_src <= blitter_start ? {video_control[1], video_control[0]} : pend_src;
@@ -743,41 +698,35 @@ always_ff @(posedge clk_10m) begin
                 if (blit_adj_mask[1:0] != 0) blit_adj_mask[1:0] <= 2'b11;
                 // Start first pixel: present low-half ROM addr
                 blitrom_addr_a <= {1'b0, blit_cur_src[12:0]};
-                // DPRAM-LATENCY-FIX-2026-06-21: was "vram_state <= ST_BLIT_ROMRD;" (1-cycle settle — TOO EARLY).
                 vram_state <= ST_BLIT_WAIT_LO;
             end
 
-            // DPRAM-LATENCY-FIX-2026-06-21: NEW settle state — LOW-half ROM needs 2 clks (addr-reg + read), like
-            // the CPU RMW. Without it blit_rom_data_lo was captured a cycle early off the shared blitrom port,
-            // landing the LOW plane 1 source-pixel off from HIGH = the green/blue 1px fringe.
+            // Settle state: the LOW-half ROM read needs 2 clocks (addr-reg + read).
             ST_BLIT_WAIT_LO: begin
                 vram_state <= ST_BLIT_ROMRD;
             end
 
             ST_BLIT_ROMRD: begin
-                // DPRAM-LATENCY-FIX-2026-06-21: LOW-half ROM data now valid (2 clks after present). Capture it,
-                // then present HIGH-half addr + the VRAM read addr (both captured 2 clks later in ST_BLIT_RMW_RD).
+                // LOW-half ROM data valid; present the HIGH-half and VRAM read addresses.
                 blit_rom_data_lo <= blitrom_qa;
                 blitrom_addr_a <= {1'b1, blit_cur_src[12:0]};
                 vram_addr_a <= (blit_cur_dst[13:0] + {6'd0, blit_x_cnt}) & 14'h3FFF;
-                // DPRAM-LATENCY-FIX-2026-06-21: was "vram_state <= ST_BLIT_RMW_RD;" (1-cycle — TOO EARLY).
                 vram_state <= ST_BLIT_WAIT_HI;
             end
 
-            // DPRAM-LATENCY-FIX-2026-06-21: NEW settle state — HIGH-half ROM + VRAM reads need 2 clks.
+            // Settle state: the HIGH-half ROM and VRAM reads need 2 clocks.
             ST_BLIT_WAIT_HI: begin
                 vram_state <= ST_BLIT_RMW_RD;
             end
 
             ST_BLIT_RMW_RD: begin
-                // DPRAM-LATENCY-FIX-2026-06-21: HIGH-half ROM AND VRAM read-back both valid now (2 clks after
-                // presented in ST_BLIT_ROMRD). Both match the SAME source pixel as LOW → planes aligned.
+                // HIGH-half ROM and VRAM read-back both valid, on the same source pixel as LOW.
                 blit_rom_data_hi <= blitrom_qa;
                 rmw_old_word     <= {vram_hi_qa, vram_lo_qa};
                 vram_state <= ST_BLIT_RMW_WR_LO;
             end
 
-            // DPRAM-LATENCY-FIX-2026-06-21: ST_BLIT_RMW_RD2 no longer reached (VRAM capture merged above). Kept.
+            // No longer reached: the VRAM capture is merged into ST_BLIT_ROMRD above.
             ST_BLIT_RMW_RD2: begin
                 rmw_old_word <= {vram_hi_qa, vram_lo_qa};
                 vram_state <= ST_BLIT_RMW_WR_LO;
@@ -787,32 +736,12 @@ always_ff @(posedge clk_10m) begin
                 // clear pixel first
                 rmw_expdata   = 32'h00000000;
                 rmw_layermask = build_layermask(blit_adj_mask[3:0]);
-                // Apply low-half blit (mask & 0x0A)
-                //
-                // NOTE 2026-05-16: this pairing is INVERTED from MAME's
-                // kangaroo.cpp:344-345 (MAME pairs LOW↔0x05, HIGH↔0x0a).
-                // We swapped to match MAME and the test showed: colors went
-                // way off across all graphics + sprite trails turned BLACK
-                // instead of green (clear started working but background
-                // restoration broke). Diagnosis: the mismatch here is being
-                // consumed by a COMPENSATING WRONGNESS elsewhere in the
-                // pipeline (compositing? palette LUT? plane extraction at
-                // scanout?), and the two wrongs make a right visually.
-                // Reverting until we can ground-truth against MAME and find
-                // the second mismatch. See
-                // Claude/sprite_artifacting_audit_2026-05-16.md.
+                // Apply low-half blit: LOW-half ROM pairs with mask & 0x05 (kangaroo.cpp:344)
                 rmw_expdata   = expand_data(blit_rom_data_lo);
-                // PAIRING-MAME-MATCH-2026-06-21: with the DPRAM timing skew fixed, match MAME kangaroo.cpp:344
-                // (LOW-half ROM <-> mask & 0x05). The inverted pairing only looked right because the skew was
-                // compensating; now it's exposed. Original (inverted) line below:
-                // rmw_layermask = build_layermask(blit_adj_mask[3:0] & 4'b1010);
                 rmw_layermask = build_layermask(blit_adj_mask[3:0] & 4'b0101);
                 rmw_new_word  = (rmw_old_word & ~rmw_layermask) | (rmw_expdata & rmw_layermask);
-                // Now apply high-half blit (mask & 0x05) on top of that
+                // Now apply high-half blit: HIGH-half ROM pairs with mask & 0x0a (kangaroo.cpp:345)
                 rmw_expdata   = expand_data(blit_rom_data_hi);
-                // PAIRING-MAME-MATCH-2026-06-21: HIGH-half ROM <-> mask & 0x0a per MAME kangaroo.cpp:345.
-                // Original (inverted) line below:
-                // rmw_layermask = build_layermask(blit_adj_mask[3:0] & 4'b0101);
                 rmw_layermask = build_layermask(blit_adj_mask[3:0] & 4'b1010);
                 rmw_new_word  = (rmw_new_word & ~rmw_layermask) | (rmw_expdata & rmw_layermask);
                 // Write back
@@ -843,7 +772,6 @@ always_ff @(posedge clk_10m) begin
                     blit_x_cnt <= blit_x_cnt + 8'd1;
                     // Start next pixel: present LOW-half ROM addr
                     blitrom_addr_a <= {1'b0, (blit_cur_src + 16'd1) & 16'h1FFF};
-                    // DPRAM-LATENCY-FIX-2026-06-21: was "vram_state <= ST_BLIT_ROMRD;" (1-cycle — TOO EARLY).
                     vram_state <= ST_BLIT_WAIT_LO;
                 end
             end
@@ -876,22 +804,14 @@ wire       prib = ~video_control[9][0];
 wire [8:0] scan_x = h_cnt[9:1];
 wire [7:0] scan_y = v_cnt[7:0];
 
-// 2026-06-18: scanout left at NATIVE (full content + correct size). HW results that rule out the simple
-// knobs: doubling (src_col=h_cnt[9:2]) => top-half magnified; doubling + halved extent (hblank 256) =>
-// only 1/4 of screen. So the doubling<->display-extent relationship here is NOT understood — needs a full
-// pixel-path trace (h_cnt/v_cnt -> ce_pix -> arcade_video -> screen_rotate -> FB) before any more scanout
-// edits. is_odd=h_cnt[1] interleave + pixb_raw priority kept (interleave present, just not MAME-clean).
+// Scanout is native: 256 source columns 1:1, the doubling happens in arcade_video.
 wire [7:0] effxa = scrollx + (scan_x[7:0] ^ xora);
 wire [7:0] effya = scrolly + (scan_y ^ xora);
 wire [7:0] effxb = scan_x[7:0] ^ xorb;
 wire [7:0] effyb = scan_y ^ xorb;
 
-// Scanout pipeline — DIAG-2026-06-18 PLANE-OFFSET FIX. Read BOTH planes EVERY cycle on their own
-// same-latency ports (plane A = vram_lo/hi:B, plane B = vram_lo2/hi2:B) instead of alternating ONE
-// shared port on h_cnt[0]. The old alternating read left plane A one COLUMN ahead of plane B at the
-// compositing point → garbage-colored sprite EDGES (the 2-month fringe / "green poop"). Now both planes
-// are ALIGNED to the same column. Slices are delayed one cycle to match the 1-cycle DPRAM read latency,
-// identically for both planes. (Image may shift ~1px horizontally vs before — cosmetic; adjust hblank if so.)
+// Scanout pipeline: both planes are read every cycle on their own same-latency ports, and
+// the slice indices are delayed one cycle to match the DPRAM read, so the planes stay aligned.
 
 reg [31:0] scan_word_a, scan_word_b;
 reg [1:0]  scan_effxa_slice, scan_effxb_slice;
@@ -933,15 +853,10 @@ wire [3:0] pixb_raw = vram_slice_b[7:4];   // Plane B = high nibble
 // Priority compositing (MAME logic)
 // Even pixels (first of pair): full brightness, no KOS1 masking
 // Odd pixels (second of pair): apply KOS1 color mask for Z=0 pixels
-// DIAG-2026-06-18: at the NEW 10MHz pixel sampling (arcade_video ce_pix_2x), arcade_video samples the
-// core's RGB once per h_cnt, so consecutive display pixels share scan_x (= the doubling) and h_cnt[0]
-// is the doubled-pixel parity → full / dimmed-copy alternation = MAME interleave. (Was h_cnt[1], the
-// parity for the old 5MHz/256px path.) Source stays native scan_x = full 256-column content.
+// arcade_video samples the core's RGB once per h_cnt at ce_pix_2x, so consecutive display
+// pixels share scan_x and h_cnt[0] is the doubled-pixel parity driving the KOS1 alternation.
 wire is_odd_pixel = h_cnt[0];
 
-// (2026-06-18: plane-hold "bleed fix" REVERTED — had zero effect on HW, so the bleed is NOT plane-A/B
-//  misalignment. Back to the straight KOS1 masking. Bleed cause now suspected = the scaler interpolating
-//  the fine interleave pattern in the horizontally-stretched THIN framebuffer → fix is the WIDTH/aspect.)
 wire [3:0] pixa_masked = (is_odd_pixel && !(pixa_raw[3])) ? (pixa_raw & {1'b0, maska}) : pixa_raw;
 wire [3:0] pixb_masked = (is_odd_pixel && !(pixb_raw[3])) ? (pixb_raw & {1'b0, maskb}) : pixb_raw;
 

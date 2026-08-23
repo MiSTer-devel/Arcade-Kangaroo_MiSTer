@@ -343,33 +343,21 @@ always @(posedge CLK_10M) begin
 end
 
 //////////////////  Game select (mod byte, MRA <rom index="5">)  ///////////////////////////
-// GAMESEL-2026-06-21: MRA `<rom index="5"><part>01</part></rom>` => Funky Fish; absent => Kangaroo (mod=0).
-// Cleared at each download start so Kangaroo MRAs (no index-5 byte) read mod=0 with NO MRA edits.
-// (index 1 = sound ROM, index 4 = NVRAM — both taken; 5 is free.)
+// MRA `<rom index="5"><part>01</part></rom>` => Funky Fish; absent => Kangaroo (mod = 0).
 reg  [7:0] core_mod = 8'd0;
-// GAMESEL-FIX-2026-06-21: dropped the download-start reset — it cleared core_mod when the index-4 NVRAM load
-// (a separate ioctl_download transaction) re-raised ioctl_download AFTER the mod byte was captured. Now mirrors
-// the proven Kyugo pattern (Arcade-Kyugo.sv:494 — simple capture, no reset). Original below:
-// reg ioctl_download_d = 1'b0;
-// always @(posedge CLK_10M) begin
-//     ioctl_download_d <= ioctl_download;
-//     if (ioctl_download & ~ioctl_download_d)    core_mod <= 8'd0;       // download start
-//     else if (ioctl_wr & (ioctl_index == 8'd5)) core_mod <= ioctl_dout;
-// end
+// No reset on download start: the index-4 NVRAM load re-raises ioctl_download after the mod
+// byte is captured, which would clear it again.
 always @(posedge CLK_10M)
 	if (ioctl_wr & (ioctl_index == 8'd5))
 		core_mod <= ioctl_dout;
 wire is_funkyfish = (core_mod == 8'd1);
-// MCU-2026-06-22: index-5 bit1 = MB8841 fitted (original kangaroo/kangarooa MRAs set 0x02). Bootleg & Funky
-// Fish leave it clear -> mcu_present=0 -> boot-pulse NMI path (unchanged). is_funkyfish stays an == 0x01 test.
+// index-5 bit1 = MB8841 fitted. Bootleg and Funky Fish leave it clear and use the boot-pulse NMI path.
 wire mcu_present = core_mod[1];
 
 //////////////////  Arcade Buttons/Interfaces   ///////////////////////////
 
 //Player 1
-// GAMESEL-2026-06-21: joystick_0[4] (Button1 / "Bubbles") is the KANGAROO jump-assist hack — for Funky Fish
-// it becomes the 2nd game button (IN1 bit 0x20) instead, so drop it from UP there.
-// Original: wire m_up1 = btn_up | joystick_0[3] | joystick_0[4];
+// joystick_0[4] (Button 1) is the Kangaroo jump-assist hack, so it is not an UP source on Funky Fish.
 wire m_up1      = btn_up        | joystick_0[3]  | (is_funkyfish ? 1'b0 : joystick_0[4]);
 wire m_down1    = btn_down      | joystick_0[2];
 wire m_left1    = btn_left      | joystick_0[1];
@@ -412,12 +400,9 @@ wire hs, vs;
 wire [7:0] r, g, b;
 wire ce_pix;
 
-// DIAG-2026-06-18: 2x pixel clock for "double the size then reduce". arcade_video now renders 512 px/line
-// (each of the 256 source columns doubled -> MAME-style dimmed-copy interleave); screen_rotate + the
-// scaler then shrink the 512-wide framebuffer back to the display ("reduce the resolution/size").
-// ce_pix MUST be a CLK_40M-domain pulse: the core's 5 MHz ce_pix lives in the 10 MHz domain and can't be
-// cleanly doubled there. Phase (==2) samples mid-period after the core's RGB settles; if pixels shimmer
-// or smear horizontally, try ==1 or ==3. To revert: arcade_video back to #(256,24) and drop .ce_pix below.
+// 2x pixel clock: arcade_video renders 512 px/line (each of the 256 source columns doubled)
+// for the MAME-style dimmed-copy interleave, and the scaler shrinks it back. ce_pix must be a
+// CLK_40M-domain pulse; phase ==2 samples after the core's RGB has settled.
 reg [1:0] ce_pix_div = 2'd0;
 always @(posedge CLK_40M) ce_pix_div <= ce_pix_div + 1'd1;
 wire ce_pix_2x = (ce_pix_div == 2'd2);   // 10 MHz, 1-in-4 of CLK_40M
@@ -427,12 +412,12 @@ wire no_rotate = status[12] | direct_video;
 wire flip = status[11] | ~no_rotate;
 screen_rotate screen_rotate(.*);
 
-arcade_video #(512,24) arcade_video   // DIAG-2026-06-18: was #(256,24) — 512 px/line (256 cols doubled), scaler reduces
+arcade_video #(512,24) arcade_video   // 512 px/line: 256 columns doubled, the scaler reduces
 (
 	.*,
 
 	.clk_video(CLK_40M),
-	.ce_pix(ce_pix_2x),   // DIAG-2026-06-18: 10 MHz (overrides the core's 5 MHz ce_pix that .* would pick)
+	.ce_pix(ce_pix_2x),   // 10 MHz, overriding the core's 5 MHz ce_pix that .* would pick
 
 	.RGB_in(rgb_out),
 	.HBlank(hblank),
@@ -444,9 +429,7 @@ arcade_video #(512,24) arcade_video   // DIAG-2026-06-18: was #(256,24) — 512 
 );
 
 // DIP switch
-// DIP-FIX-2026-06-21: DIPs arrive from the OSD via ioctl index 254 (standard MiSTer DIP download), NOT status.
-// Was `sw0 = status[7:0]` — a placeholder that never received the OSD DIP edits → "always 3 lives". Mirrors
-// Kyugo (Arcade-Kyugo.sv:487). The MRA <switches default=..> is downloaded here; sw0 = DSW0 (read at 0xe400).
+// DIPs arrive from the OSD via ioctl index 254, not status. sw0 = DSW0, read at $E400.
 reg [7:0] dip_sw[8] = '{8'h00,8'h00,8'h00,8'h00,8'h00,8'h00,8'h00,8'h00};
 always @(posedge CLK_10M) begin
 	if (ioctl_wr && (ioctl_index == 8'd254) && !ioctl_addr[24:3])
@@ -464,8 +447,6 @@ Kangaroo kangaroo_inst
 	// IN0: {coin_r, coin_l, start2, start1, service} active-high
 	.in0({m_coin2, m_coin1, m_start2, m_start1, m_service}),
 	// IN1: {punch, down, up, left, right} P1 active-high
-	// GAMESEL-2026-06-21: in1 widened 5->8; bit5 (0x20) = Funky Fish 2nd button (ff_btn2_p1).
-	// Original: .in1({m_punch_p1, m_down1, m_up1, m_left1, m_right1}),
 	.in1({3'b00, m_punch_p1, m_down1, m_up1, m_left1, m_right1}),
 	// IN2: {punch, down, up, left, right} P2 active-high
 	.in2({3'b00, m_punch_p2, m_down2, m_up2, m_left2, m_right2}),
@@ -499,9 +480,8 @@ Kangaroo kangaroo_inst
 	.hs_write(hs_write_enable)
 );
 
-// HISCORE SYSTEM (HISCORE-2026-06-21) — mirrors Tutankham (Kangaroo's structural base), same hiscore.v v0014.
-// ioctl_din / ioctl_upload_req are now DRIVEN by the hiscore module (the old "disabled" assigns are removed).
-// Score access uses the work-RAM port B in Kangaroo_CPU.sv:208 (clk_10m). Config = MRA index 3, dump = index 4.
+// HISCORE SYSTEM — hiscore.v v0014. Score access uses the work-RAM port B in Kangaroo_CPU.sv.
+// Config = MRA index 3, dump = index 4.
 wire [15:0] hs_address;
 wire [7:0]  hs_data_in;
 wire [7:0]  hs_data_out;
