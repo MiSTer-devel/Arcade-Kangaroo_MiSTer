@@ -35,6 +35,7 @@ module Kangaroo
     input          [7:0] ioctl_index,
 
     input                pause,
+    input                crt_flip,
 
     // MB8841 MCU present (original Kangaroo HW). From MRA index-5 game-select byte bit1.
     input                mcu_present,
@@ -124,6 +125,7 @@ Kangaroo_CPU cpu_board
     .mcurom_wr(idx6_wr),
 
     .pause(pause),
+    .crt_flip(crt_flip),
 
     .hs_address(hs_address),
     .hs_data_in(hs_data_in),

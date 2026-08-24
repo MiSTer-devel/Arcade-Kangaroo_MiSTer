@@ -42,6 +42,7 @@ module Kangaroo_CPU
     input         mcurom_wr,      // ioctl_wr for index 6 (prog 0x000-0x7FF + protrom 0x800-0xFFF)
 
     input         pause,
+    input         crt_flip,
 
     // Hiscore interface (active high, stubbed for now)
     input  [15:0] hs_address,
@@ -793,8 +794,10 @@ wire [7:0] scrolly = video_control[6];
 wire [7:0] scrollx = video_control[7];
 wire [2:0] maska = (video_control[10] & 8'h28) >> 3;   // MAME exact
 wire [2:0] maskb =  video_control[10][2:0];
-wire [7:0] xora = video_control[9][5] ? 8'hFF : 8'h00;
-wire [7:0] xorb = video_control[9][4] ? 8'hFF : 8'h00;
+// FLIP A / FLIP B (video_control[9] bits 5/4, kangaroo.cpp:364-365), XORed with the OSD
+// CRT Flip so it reuses the game's own mirror rather than adding a second one.
+wire [7:0] xora = (video_control[9][5] ^ crt_flip) ? 8'hFF : 8'h00;
+wire [7:0] xorb = (video_control[9][4] ^ crt_flip) ? 8'hFF : 8'h00;
 wire       enaa = video_control[9][3];
 wire       enab = video_control[9][2];
 wire       pria = ~video_control[9][1];
