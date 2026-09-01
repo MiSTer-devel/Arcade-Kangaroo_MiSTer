@@ -22,6 +22,10 @@ module Kangaroo
     output               video_hsync, video_vsync,
     output               video_hblank, video_vblank,
     output               ce_pix,
+
+    // DIAG-REVERT-2026-09-01: OSD Screen Centering, passed straight to Kangaroo_CPU
+    input          [3:0] h_center,
+    input          [2:0] v_center,
     output         [7:0] video_r, video_g, video_b,
 
     // Audio
@@ -96,6 +100,9 @@ Kangaroo_CPU cpu_board
     .video_hblank(video_hblank),
     .video_vblank(video_vblank),
     .ce_pix(ce_pix),
+
+    .h_center(h_center),    // DIAG-REVERT-2026-09-01
+    .v_center(v_center),    // DIAG-REVERT-2026-09-01
 
     .dsw0(dsw0),
     .in0(in0),

@@ -17,6 +17,15 @@ module Kangaroo_CPU
     output        video_hblank, video_vblank,
     output        ce_pix,
 
+    // DIAG-REVERT-2026-09-01: Screen Centering offsets from the OSD, two's complement.
+    // h_center is in PIXELS and scaled x2 below because h_cnt runs at the double-rate
+    // 10 MHz clock (MAME: 320*2 / 256*2), so one displayed pixel is two h_cnt counts.
+    // v_center is only 3 bits: this board's vblank is 20 lines (v_cnt 248..259 + 0..7),
+    // so a +-8 range like Vastar's would push vsync onto visible lines. +-4 is the most
+    // that fits with the 4-line pulse staying inside vblank.
+    input   [3:0] h_center,
+    input   [2:0] v_center,
+
     // Inputs
     input   [7:0] dsw0,             // 8-bit DIP switch
     input   [4:0] in0,              // IN0: service, start1, start2, coin_l, coin_r
@@ -430,7 +439,45 @@ end
 // This is a latency match, not a window shift; the v axis has no such latency, so
 // vblank/vsync stay combinational and the vblank IRQ uses the undelayed video_vblank.
 wire video_hblank_raw = (h_cnt >= 10'd512);
-wire video_hsync_raw  = (h_cnt >= 10'd560) & (h_cnt < 10'd624);  // ~64 clocks
+// ==============================================================================
+// DIAG-REVERT-2026-09-01 -- ANALOG/CRT SYNC PLACEMENT (provisional, awaiting HW report)
+//
+// The horizontal BLANKING BUDGET here is correct and copied from MAME
+// (kangaroo.cpp: set_raw(10_MHz_XTAL, 320*2, 0*2, 256*2, 260, 8, 248) -> htotal 640,
+// active 512, so 128 clocks / 12.8 us of blanking). What was wrong is where the sync
+// pulse sat INSIDE that budget -- set_raw specifies the blanking window but says
+// nothing about sync position, so that part was invented:
+//
+//   old:  front 512..559 = 48 clk = 4.8 us
+//         sync  560..623 = 64 clk = 6.4 us
+//         back  624..639 = 16 clk = 1.6 us   <-- runt
+//
+// A 15 kHz tube wants roughly front 1.5 / sync 4.7 / back 5.7 us, with the BACK porch
+// the longest of the three: it is what the monitor's clamp settles on and what sets
+// horizontal image position. Here it was the shortest by a factor of three. HDMI never
+// sees this (ascal re-times off DE); the analog output hands the porches straight to
+// the monitor. Same defect class as Vastar's 2026-09-01 raster fix.
+//
+//   new:  front 512..535 = 24 clk = 2.4 us   (h_center = 0)
+//         sync  536..583 = 48 clk = 4.8 us
+//         back  584..639 = 56 clk = 5.6 us
+//
+// Base is 536 rather than 528 so the OSD Screen Centering control has symmetric room:
+// h_center spans +-8 pixels = +-16 h_cnt counts, giving a front porch of 8..38 clk
+// (0.8..3.8 us) and a back porch of 72..42 clk (7.2..4.2 us). Every setting stays in
+// spec, and the default lands within a few hundred ns of the 1.5 / 4.7 / 5.7 us
+// a 15 kHz tube expects.
+//
+// UNCHANGED: htotal 640, pixel clock 10 MHz, line rate 15.625 kHz, frame rate 60.1 Hz,
+// active area, total blanking, and all vertical timing. Only the sync pulse moved, so
+// the HDMI output is bit-identical.
+//
+// TO REVERT: uncomment the original line below, delete the DIAG line.
+// // wire video_hsync_raw  = (h_cnt >= 10'd560) & (h_cnt < 10'd624);  // ~64 clocks
+// ==============================================================================
+wire [9:0] hs_start = 10'd536 + {{5{h_center[3]}}, h_center, 1'b0};  // DIAG: x2, +-16 clk
+wire [9:0] hs_end   = hs_start + 10'd48;                             // DIAG: 48 clk = 4.8 us
+wire video_hsync_raw  = (h_cnt >= hs_start) & (h_cnt < hs_end);      // DIAG
 reg [1:0] hblank_sr = 2'b11;
 reg [1:0] hsync_sr  = 2'b00;
 always_ff @(posedge clk_10m) begin
@@ -440,7 +487,14 @@ end
 assign video_hblank = hblank_sr[1];
 assign video_hsync  = hsync_sr[1];
 assign video_vblank = (v_cnt < 9'd8) | (v_cnt >= 9'd248);
-assign video_vsync  = (v_cnt >= 9'd252) & (v_cnt < 9'd256);     // ~4 lines
+// DIAG-REVERT-2026-09-01: vsync made adjustable. vblank is v_cnt 248..259, so the
+// 4-line pulse must start in 248..255; base 252 with a 3-bit two's complement offset
+// gives exactly that range and cannot land on a visible line.
+// Original, uncomment to restore:
+// assign video_vsync  = (v_cnt >= 9'd252) & (v_cnt < 9'd256);     // ~4 lines
+wire [8:0] vs_start = 9'd252 + {{6{v_center[2]}}, v_center};    // DIAG: +-4 lines
+wire [8:0] vs_end   = vs_start + 9'd4;                          // DIAG
+assign video_vsync  = (v_cnt >= vs_start) & (v_cnt < vs_end);   // DIAG
 
 //--------------------------------------------------------- Video RAM ----------------------------------------------------------//
 

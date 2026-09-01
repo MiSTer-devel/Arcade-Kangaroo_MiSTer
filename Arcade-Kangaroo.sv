@@ -70,6 +70,12 @@ localparam CONF_STR = {
 	"P1OB,HDMI Flip,Off,On;",
 	"P1OM,CRT Flip,Off,On;",
 	"P1OFH,Scandoubler Fx,None,HQ2x,CRT 25%,CRT 50%,CRT 75%;",
+	// DIAG-REVERT-2026-09-01: Screen Centering added for analog/CRT use. Same status
+	// bits and same label convention as Vastar (two's complement: 0, +1..+7, -8..-1).
+	// V Center is 3 bits, not 4 -- this board only has 20 lines of vblank, so +-4 is
+	// the most that keeps the vsync pulse off visible lines. See Kangaroo_CPU.sv.
+	"P1O36,H Center,0,+1,+2,+3,+4,+5,+6,+7,-8,-7,-6,-5,-4,-3,-2,-1;",
+	"P1O79,V Center,0,+1,+2,+3,-4,-3,-2,-1;",
 	"-;",
 	"P2,Pause Options;",
 	"P2OP,Pause when OSD is open,On,Off;",
@@ -309,6 +315,9 @@ Kangaroo kangaroo_inst
 	.video_vblank(vblank),
 	.video_hblank(hblank),
 	.ce_pix(ce_pix),
+
+	.h_center(status[6:3]),    // DIAG-REVERT-2026-09-01
+	.v_center(status[9:7]),    // DIAG-REVERT-2026-09-01
 
 	.video_r(r),
 	.video_g(g),
